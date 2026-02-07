@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- これはAndroidアプリの設定ファイルです -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ↓ ここから「権限」の設定：アプリが使える機能を宣言します -->
+
+    <!-- FOREGROUND_SERVICE：バックグラウンドでアプリを動かす権限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- FOREGROUND_SERVICE_MEDIA_PLAYBACK：音声・音楽を再生する権限（Android 14以降必須） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- POST_NOTIFICATIONS：通知を表示する権限（Android 13以降必須） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- WAKE_LOCK：画面オフでもアプリを動かし続ける権限 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ↓ ここから「アプリ本体」の設定 -->
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="VoiceReader"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.VoiceReader">
+        <!-- アプリのテーマ（見た目） -->
+
+    <!-- ↓ メイン画面（ユーザーが最初に見る画面）の設定 -->
+        <activity
+            android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="true"
+            android:label="VoiceReader"
+            android:theme="@style/Theme.VoiceReader">
+
+    <intent-filter>
+        <action android:name="android.intent.action.MAIN" />      <!-- メイン画面として設定 -->
+        <category android:name="android.intent.category.LAUNCHER" /> <!-- ランチャーに表示 -->
+    </intent-filter>
+    <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="text/plain" />
+    </intent-filter>
+</activity>
+
+    <!-- ↓ バックグラウンドで音声読み上げを行う「サービス」の設定 -->
+        <service
+            android:name=".TtsService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+    </application>
+
+    </manifest>
+
