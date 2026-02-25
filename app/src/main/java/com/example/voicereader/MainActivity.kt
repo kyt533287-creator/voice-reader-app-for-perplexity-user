@@ -565,15 +565,17 @@ class MainActivity : ComponentActivity() {
         val activity = context as? MainActivity
         val scope = rememberCoroutineScope()
 
-        // 自動スクロール処理: 再生位置が変わったらスクロールする
-        // ★修正：スクロール復帰の安定化
-        // 画面遷移後にLazyColumnの準備が間に合わずスクロールが失敗する問題を
-        // 少し遅延を入れることで解消する
+        // ★修正：読み上げ中の段落が画面の中央付近に来るようにスクロール
+        // animateScrollToItemは指定アイテムを「画面上端」に持ってくるので、
+        // 画面に表示されているアイテム数の半分だけ手前にずらすことで中央に寄せる
         LaunchedEffect(currentSentenceIndex) {
             if (currentSentenceIndex >= 0 && currentSentenceIndex < sentences.size) {
                 // LazyColumnの描画完了を待ってからスクロール実行
                 kotlinx.coroutines.delay(100)
-                listState.animateScrollToItem(currentSentenceIndex)
+                // 現在画面に見えているアイテム数を取得し、半分手前にスクロール
+                val visibleCount = listState.layoutInfo.visibleItemsInfo.size
+                val targetIndex = maxOf(0, currentSentenceIndex - visibleCount / 2)
+                listState.animateScrollToItem(targetIndex)
             }
         }
 
