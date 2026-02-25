@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.widget.Toast
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -48,6 +49,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import java.util.Locale
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 
 // 画面定義
 enum class Screen {
@@ -104,7 +106,7 @@ class MainActivity : ComponentActivity() {
 
         // PDFBox初期化
         try {
-            com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(applicationContext)
+            PDFBoxResourceLoader.init(applicationContext)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -226,7 +228,7 @@ class MainActivity : ComponentActivity() {
                 PromptListScreen(
                     prompts = promptList,
                     onNavigateBack = { currentScreen = Screen.Main },
-                    onEditPrompt = { index ->
+                    onEditPrompt = { index: Int -> // 型を明示
                         editingPromptIndex = index
                         currentScreen = Screen.PromptEdit
                     },
@@ -234,11 +236,11 @@ class MainActivity : ComponentActivity() {
                         editingPromptIndex = -1
                         currentScreen = Screen.PromptEdit
                     },
-                    onDeletePrompt = { index ->
+                    onDeletePrompt = { index: Int -> // 型を明示
                         promptList.removeAt(index)
                         savePrompts()
                     },
-                    onSelectPrompt = { prompt ->
+                    onSelectPrompt = { prompt: PromptItem -> // 型を明示
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         val clip = android.content.ClipData.newPlainText("Prompt", prompt.content)
                         clipboard.setPrimaryClip(clip)
@@ -304,6 +306,8 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -413,15 +417,63 @@ class MainActivity : ComponentActivity() {
         var original by remember { mutableStateOf(initialEntry?.original ?: "") }
         var replacement by remember { mutableStateOf(initialEntry?.replacement ?: "") }
         var isEnabled by remember { mutableStateOf(initialEntry?.isEnabled ?: true) }
+        var showDialog by remember { mutableStateOf(false) }
 
-        BackHandler { onCancel() }
+        val hasChanges = original != (initialEntry?.original ?: "") ||
+                replacement != (initialEntry?.replacement ?: "") ||
+                isEnabled != (initialEntry?.isEnabled ?: true)
+        Log.d("DictionaryEditScreen", "hasChanges: $hasChanges")
+
+        BackHandler {
+            if (hasChanges) {
+                showDialog = true
+                Log.d("DictionaryEditScreen", "BackHandler: showDialog = true")
+            } else {
+                onCancel()
+            }
+        }
+
+        if (showDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showDialog = false
+                    Log.d("DictionaryEditScreen", "AlertDialog dismiss: showDialog = false")
+                },
+                title = { Text("確認") },
+                text = { Text("保存せずに終了しますか？") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showDialog = false
+                        Log.d("DictionaryEditScreen", "AlertDialog confirm: showDialog = false")
+                        onCancel()
+                    }) {
+                        Text("はい")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showDialog = false
+                        Log.d("DictionaryEditScreen", "AlertDialog dismissButton: showDialog = false")
+                    }) {
+                        Text("いいえ")
+                    }
+                }
+            )
+        }
 
         Scaffold(
             topBar = {
                 TopAppBar(
                     title = { Text(if (initialEntry == null) "新規辞書" else "辞書編集") },
                     navigationIcon = {
-                        IconButton(onClick = onCancel) {
+                        IconButton(onClick = {
+                            if (hasChanges) {
+                                showDialog = true
+                                Log.d("DictionaryEditScreen", "navigationIcon: showDialog = true")
+                            } else {
+                                onCancel()
+                            }
+                        }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "戻る")
                         }
                     },
@@ -445,8 +497,9 @@ class MainActivity : ComponentActivity() {
                     value = original,
                     onValueChange = { original = it },
                     label = { Text("例: URL, https://") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    modifier = Modifier.fillMaxWidth().background(Color.Transparent),
+                    singleLine = true,
+                    colors = TextFieldDefaults.colors()
                 )
 
                 Text("置き換え後（空欄なら削除）", fontWeight = FontWeight.Bold)
@@ -454,8 +507,9 @@ class MainActivity : ComponentActivity() {
                     value = replacement,
                     onValueChange = { replacement = it },
                     label = { Text("例: ユーアールエル（空欄でも可）") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    modifier = Modifier.fillMaxWidth().background(Color.Transparent),
+                    singleLine = true,
+                    colors = TextFieldDefaults.colors()
                 )
 
                 Row(
@@ -512,9 +566,13 @@ class MainActivity : ComponentActivity() {
         val scope = rememberCoroutineScope()
 
         // 自動スクロール処理: 再生位置が変わったらスクロールする
+        // ★修正：スクロール復帰の安定化
+        // 画面遷移後にLazyColumnの準備が間に合わずスクロールが失敗する問題を
+        // 少し遅延を入れることで解消する
         LaunchedEffect(currentSentenceIndex) {
             if (currentSentenceIndex >= 0 && currentSentenceIndex < sentences.size) {
-                // 少しオフセットを持たせて、読み上げ中の行が画面上部に隠れないようにする
+                // LazyColumnの描画完了を待ってからスクロール実行
+                kotlinx.coroutines.delay(100)
                 listState.animateScrollToItem(currentSentenceIndex)
             }
         }
@@ -547,14 +605,22 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // PDF Picker
-        val pdfPickerLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.GetContent()
+        // PDF / Word ファイルピッカー（両形式に対応）
+        val docPickerLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocument()
         ) { uri: Uri? ->
             uri?.let {
                 scope.launch(Dispatchers.IO) {
-                    val pdfText = extractTextFromPdf(context, it)
-                    withContext(Dispatchers.Main) { if (pdfText.isNotEmpty()) onUpdateText(pdfText) }
+                    // MIMEタイプを確認してPDFかWordか自動判定
+                    val mimeType = context.contentResolver.getType(it) ?: ""
+                    val text = when {
+                        mimeType.contains("pdf") ->
+                            extractTextFromPdf(context, it)
+                        mimeType.contains("wordprocessingml") || mimeType.contains("msword") ->
+                            extractTextFromDocx(context, it)
+                        else -> ""
+                    }
+                    withContext(Dispatchers.Main) { if (text.isNotEmpty()) onUpdateText(text) }
                 }
             }
         }
@@ -584,10 +650,19 @@ class MainActivity : ComponentActivity() {
                         IconButton(
                             onClick = {
                                 if (isEditMode) {
-                                    // 保存処理
+                                    // 保存処理：編集されたテキストを反映
                                     onUpdateText(editingText)
                                     isEditMode = false
+                                    // ★修正：テキストが変わった可能性があるので先頭にリセット
+                                    // 古いインデックスだと違う段落を指す危険があるため
+                                    currentSentenceIndex = 0
                                 } else {
+                                    // ★修正：編集モードに入る前に再生を停止する
+                                    // 編集中に読み上げが続くとユーザーが混乱するため
+                                    if (isPlaying) {
+                                        ttsService?.stop()
+                                        isPlaying = false
+                                    }
                                     // 編集モードに切り替え
                                     editingText = text
                                     isEditMode = true
@@ -608,8 +683,8 @@ class MainActivity : ComponentActivity() {
                 // メインテキストエリア
                 Box(
                     modifier = Modifier
-                        .weight(1f)
                         .fillMaxWidth()
+                        .height(500.dp) // 新しい高さ
                         .padding(16.dp)
                         .background(Color.White)
                         .border(1.dp, Color.LightGray)
@@ -619,7 +694,9 @@ class MainActivity : ComponentActivity() {
                         OutlinedTextField(
                             value = editingText,
                             onValueChange = { editingText = it },
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.fillMaxWidth(), // fillMaxSize() から変更
+                            minLines = 15, // 最小行数を15に設定
+                            maxLines = 15, // 最大行数を15に設定
                             placeholder = { Text("テキストを編集...") }
                         )
                     } else {
@@ -665,106 +742,135 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // コントロール類
-                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    // 速度
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("速度 ${String.format(Locale.US, "%.1f", speechRate)}x", modifier = Modifier.weight(1f))
-                        Slider(
-                            value = speechRate,
-                            onValueChange = {
-                                speechRate = it
-                                ttsService?.setSpeechRate(it)
-                            },
-                            valueRange = 0.5f..2.0f,
-                            modifier = Modifier.weight(2f)
-                        )
-                    }
-                    // ピッチ
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("ピッチ ${String.format(Locale.US, "%.1f", pitch)}x", modifier = Modifier.weight(1f))
-                        Slider(
-                            value = pitch,
-                            onValueChange = {
-                                pitch = it
-                                ttsService?.setPitch(it)
-                            },
-                            valueRange = 0.5f..2.0f,
-                            modifier = Modifier.weight(2f)
-                        )
-                    }
-                }
-
-                // ボタンエリア
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // 再生ボタン
-                    Button(
-                        onClick = {
-                            if (isPlaying) {
-                                ttsService?.stop()
-                                isPlaying = false
-                            } else {
-                                if (sentences.isNotEmpty()) {
-                                    // ★修正点: 文章リストを渡して0番目から再生
-                                    ttsService?.setSpeechRate(speechRate)
-                                    ttsService?.setPitch(pitch)
-                                    setupTtsListener()
-                                    ttsService?.speakList(sentences, 0)
-
-                                    currentSentenceIndex = 0
-                                    isPlaying = true
-                                }
-                            }
-                        },
-                        modifier = Modifier.weight(1f).height(56.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = if (isPlaying) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-                    ) {
-                        Text(if (isPlaying) "停止" else "再生")
-                    }
-
-                    // PDFボタン
-                    Button(onClick = { pdfPickerLauncher.launch("application/pdf") }, modifier = Modifier.weight(1f).height(56.dp)) {
-                        Text("PDF", fontSize = 12.sp)
-                    }
-
-                    // 貼付ボタン
-                    Button(
-                        onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val clipData = clipboard.primaryClip
-                            if (clipData != null && clipData.itemCount > 0) {
-                                val pasted = clipData.getItemAt(0).text.toString()
-                                onUpdateText(pasted)
-                            }
-                        },
-                        modifier = Modifier.weight(1f).height(56.dp)
-                    ) {
-                        Text("貼付", fontSize = 12.sp)
-                    }
-
-                    // プロンプト画面へ遷移ボタン
-                    Button(
-                        onClick = onNavigateToPrompts,
-                        modifier = Modifier.weight(1f).height(56.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Text("Ｐ管理", fontSize = 10.sp)
+                if (!isEditMode) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        // 速度
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("速度 ${String.format(Locale.US, "%.1f", speechRate)}x", modifier = Modifier.weight(1f))
+                            Slider(
+                                value = speechRate,
+                                onValueChange = {
+                                    speechRate = it
+                                    ttsService?.setSpeechRate(it)
+                                },
+                                valueRange = 0.5f..3.0f,
+                                modifier = Modifier.weight(2f)
+                            )
+                        }
+                        // ピッチ
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("ピッチ ${String.format(Locale.US, "%.1f", pitch)}x", modifier = Modifier.weight(1f))
+                            Slider(
+                                value = pitch,
+                                onValueChange = {
+                                    pitch = it
+                                    ttsService?.setPitch(it)
+                                },
+                                valueRange = 0.5f..2.0f,
+                                modifier = Modifier.weight(2f)
+                            )
                         }
                     }
 
-                    // ★辞書ボタン（ここに追加）
-                    Button(
-                        onClick = onNavigateToDictionary,  // currentScreenではなくonNavigateToDictionary
-                        modifier = Modifier.weight(1f).height(56.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                    // ボタンエリア
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.Book, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Text("辞書", fontSize = 10.sp)
+                        // 再生ボタン
+                        Button(
+                            onClick = {
+                                if (isPlaying) {
+                                    ttsService?.stop()
+                                    isPlaying = false
+                                } else {
+                                    if (sentences.isNotEmpty()) {
+                                        // ★修正点: 文章リストを渡して0番目から再生
+                                        ttsService?.setSpeechRate(speechRate)
+                                        ttsService?.setPitch(pitch)
+                                        setupTtsListener()
+                                        ttsService?.speakList(sentences, 0)
+
+                                        currentSentenceIndex = 0
+                                        isPlaying = true
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f).height(56.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (isPlaying) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text(if (isPlaying) "停止" else "再生")
+                        }
+
+                        // PDF / Word ボタン（両形式のファイルピッカーを起動）
+                        Button(
+                            onClick = {
+                                docPickerLauncher.launch(arrayOf(
+                                    "application/pdf",
+                                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                ))
+                            },
+                            modifier = Modifier.weight(1f).height(56.dp)
+                        ) {
+                            Text("PDF/Word", fontSize = 11.sp)
+                        }
+
+                        // 貼付ボタン
+                        Button(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clipData = clipboard.primaryClip
+                                if (clipData != null && clipData.itemCount > 0) {
+                                    val pasted = clipData.getItemAt(0).text.toString()
+                                    onUpdateText(pasted)
+                                }
+                            },
+                            modifier = Modifier.weight(1f).height(56.dp)
+                        ) {
+                            Text("貼付", fontSize = 12.sp)
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // プロンプト画面へ遷移ボタン
+                        Button(
+                            // ★修正：画面遷移前に再生を停止する
+                            onClick = {
+                                if (isPlaying) {
+                                    ttsService?.stop()
+                                    isPlaying = false
+                                }
+                                onNavigateToPrompts()
+                            },
+                            modifier = Modifier.weight(1f).height(56.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Text("Ｐ管理", fontSize = 10.sp)
+                            }
+                        }
+
+                        // ★辞書ボタン（ここに追加）
+                        Button(
+                            // ★修正：画面遷移前に再生を停止する
+                            onClick = {
+                                if (isPlaying) {
+                                    ttsService?.stop()
+                                    isPlaying = false
+                                }
+                                onNavigateToDictionary()
+                            },
+                            modifier = Modifier.weight(1f).height(56.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(Icons.Default.Book, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Text("辞書", fontSize = 10.sp)
+                            }
                         }
                     }
                 }
@@ -845,6 +951,105 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun cleanPdfLineBreaks(text: String): String {
+        // 句読点の後の改行は保持、それ以外の改行は削除
+        return text
+            .replace(Regex("(?<![。！?\\n])\\n(?![。!?\\n])"), "") // 文中の改行を削除
+            .replace(Regex("\\n{3,}"), "\n\n") // 3個以上連続する改行は2個に
+    }
+    private fun extractTextFromPdf(context: Context, uri: Uri): String {
+        return try {
+            val inputStream = context.contentResolver.openInputStream(uri)
+            val document = com.tom_roush.pdfbox.pdmodel.PDDocument.load(inputStream)
+            val stripper = com.tom_roush.pdfbox.text.PDFTextStripper()
+            val text = stripper.getText(document)
+            document.close()
+            inputStream?.close()
+
+            // ★TextProcessorを使って改行を整形
+            TextProcessor.cleanPdfText(text)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            ""
+        }
+    }
+
+    // .docxファイル（Word文書）からテキストを抽出する
+    // .docxの正体はZIPファイル。中のword/document.xmlにテキストが入っている
+    private fun extractTextFromDocx(context: Context, uri: Uri): String {
+        return try {
+            val inputStream = context.contentResolver.openInputStream(uri) ?: return ""
+            val zip = java.util.zip.ZipInputStream(inputStream)
+
+            // ZIPの中からword/document.xmlを探す
+            var docXml = ""
+            var entry = zip.nextEntry
+            while (entry != null) {
+                if (entry.name == "word/document.xml") {
+                    docXml = zip.readBytes().decodeToString()
+                    break
+                }
+                zip.closeEntry()
+                entry = zip.nextEntry
+            }
+            zip.close()
+            inputStream.close()
+
+            if (docXml.isEmpty()) return ""
+
+            // 段落の終わり(</w:p>)を改行マーカーに置換しておく
+            val normalized = docXml.replace("</w:p>", "\n___PARA___\n")
+
+            // <w:t>タグのテキストと段落マーカーを順番に処理してテキストを組み立てる
+            val sb = StringBuilder()
+            var pos = 0
+            while (pos < normalized.length) {
+                val paraIdx = normalized.indexOf("___PARA___", pos)
+                val wtStart = normalized.indexOf("<w:t", pos)
+
+                when {
+                    // 段落マーカーがテキストタグより先 → 改行を挿入
+                    paraIdx != -1 && (wtStart == -1 || paraIdx < wtStart) -> {
+                        sb.append("\n")
+                        pos = paraIdx + "___PARA___".length
+                    }
+                    // <w:t>タグを発見 → 中のテキストを抽出
+                    wtStart != -1 -> {
+                        val tagClose = normalized.indexOf(">", wtStart)
+                        val textEnd = normalized.indexOf("</w:t>", tagClose)
+                        if (tagClose == -1 || textEnd == -1) break
+                        sb.append(normalized.substring(tagClose + 1, textEnd))
+                        pos = textEnd + 6 // "</w:t>".length = 6
+                    }
+                    // どちらも見つからなければ終了
+                    else -> break
+                }
+            }
+
+            // XMLエンティティ（特殊文字）をデコード
+            val decoded = sb.toString()
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&apos;", "'")
+                .replace("&quot;", "\"")
+
+            // PDF用の改行整形処理を流用して仕上げる
+            TextProcessor.cleanPdfText(decoded.trim())
+        } catch (e: Exception) {
+            e.printStackTrace()
+            ""
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isBound) {
+            unbindService(connection)
+            isBound = false
+        }
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun PromptEditScreen(
@@ -854,15 +1059,61 @@ class MainActivity : ComponentActivity() {
     ) {
         var title by remember { mutableStateOf(initialPrompt?.title ?: "") }
         var content by remember { mutableStateOf(initialPrompt?.content ?: "") }
+        var showDialog by remember { mutableStateOf(false) }
 
-        BackHandler { onCancel() }
+        val hasChanges = title != (initialPrompt?.title ?: "") || content != (initialPrompt?.content ?: "")
+        Log.d("PromptEditScreen", "hasChanges: $hasChanges")
+
+        BackHandler {
+            if (hasChanges) {
+                showDialog = true
+                Log.d("PromptEditScreen", "BackHandler: showDialog = true")
+            } else {
+                onCancel()
+            }
+        }
+
+        if (showDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showDialog = false
+                    Log.d("PromptEditScreen", "AlertDialog dismiss: showDialog = false")
+                },
+                title = { Text("確認") },
+                text = { Text("保存せずに終了しますか？") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showDialog = false
+                        Log.d("PromptEditScreen", "AlertDialog confirm: showDialog = false")
+                        onCancel()
+                    }) {
+                        Text("はい")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showDialog = false
+                        Log.d("PromptEditScreen", "AlertDialog dismissButton: showDialog = false")
+                    }) {
+                        Text("いいえ")
+                    }
+                }
+            )
+        }
 
         Scaffold(
             topBar = {
                 TopAppBar(
                     title = { Text(if (initialPrompt == null) "新規プロンプト" else "プロンプト編集") },
                     navigationIcon = {
-                        IconButton(onClick = onCancel) {
+                        IconButton(onClick = {
+                            if (hasChanges) {
+                                showDialog = true
+                                Log.d("PromptEditScreen", "navigationIcon: showDialog = true")
+                            } else {
+                                onCancel()
+                            }
+                        }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "戻る")
                         }
                     },
@@ -893,12 +1144,9 @@ class MainActivity : ComponentActivity() {
                 OutlinedTextField(
                     value = content,
                     onValueChange = { content = it },
-                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    modifier = Modifier.fillMaxWidth().weight(1f).background(Color.Transparent), // ここを修正
                     placeholder = { Text("ここに長いプロンプトを入力...") },
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.White,
-                        unfocusedContainerColor = Color.White
-                    )
+                    colors = TextFieldDefaults.colors()
                 )
 
                 Button(
@@ -908,37 +1156,6 @@ class MainActivity : ComponentActivity() {
                     Text("保存", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
             }
-        }
-    }
-    private fun cleanPdfLineBreaks(text: String): String {
-        // 句読点の後の改行は保持、それ以外の改行は削除
-        return text
-            .replace(Regex("(?<![。！?\\n])\\n(?![。!?\\n])"), "") // 文中の改行を削除
-            .replace(Regex("\\n{3,}"), "\n\n") // 3個以上連続する改行は2個に
-    }
-    private fun extractTextFromPdf(context: Context, uri: Uri): String {
-        return try {
-            val inputStream = context.contentResolver.openInputStream(uri)
-            val document = com.tom_roush.pdfbox.pdmodel.PDDocument.load(inputStream)
-            val stripper = com.tom_roush.pdfbox.text.PDFTextStripper()
-            val text = stripper.getText(document)
-            document.close()
-            inputStream?.close()
-
-            // ★TextProcessorを使って改行を整形
-            TextProcessor.cleanPdfText(text)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            ""
-        }
-    }
-
-
-    override fun onDestroy() {
-        super.onDestroy()
-        if (isBound) {
-            unbindService(connection)
-            isBound = false
         }
     }
 }
