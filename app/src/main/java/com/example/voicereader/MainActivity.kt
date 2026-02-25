@@ -785,13 +785,19 @@ class MainActivity : ComponentActivity() {
                                     isPlaying = false
                                 } else {
                                     if (sentences.isNotEmpty()) {
-                                        // ★修正点: 文章リストを渡して0番目から再生
+                                        // ★修正：停止した位置から再開する
+                                        // currentSentenceIndexが範囲外（読了後など）なら先頭に戻す
+                                        val startFrom = if (currentSentenceIndex in sentences.indices) {
+                                            currentSentenceIndex
+                                        } else {
+                                            0
+                                        }
                                         ttsService?.setSpeechRate(speechRate)
                                         ttsService?.setPitch(pitch)
                                         setupTtsListener()
-                                        ttsService?.speakList(sentences, 0)
+                                        ttsService?.speakList(sentences, startFrom)
 
-                                        currentSentenceIndex = 0
+                                        currentSentenceIndex = startFrom
                                         isPlaying = true
                                     }
                                 }
