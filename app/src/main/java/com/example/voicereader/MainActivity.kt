@@ -9,6 +9,7 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.os.Bundle
 import android.os.IBinder
 import android.widget.Toast
@@ -18,6 +19,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -244,7 +247,7 @@ class MainActivity : ComponentActivity() {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         val clip = android.content.ClipData.newPlainText("Prompt", prompt.content)
                         clipboard.setPrimaryClip(clip)
-                        Toast.makeText(context, "プロンプトをコピーしました", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Prompt copied", Toast.LENGTH_SHORT).show()
                         currentScreen = Screen.Main
                     }
                 )
@@ -324,15 +327,15 @@ class MainActivity : ComponentActivity() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("読み上げ辞書") },
+                    title = { Text("Dictionary") },
                     navigationIcon = {
                         IconButton(onClick = onNavigateBack) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "戻る")
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                         }
                     },
                     actions = {
                         IconButton(onClick = onCreateEntry) {
-                            Icon(Icons.Default.Add, contentDescription = "新規作成")
+                            Icon(Icons.Default.Add, contentDescription = "Add new")
                         }
                     }
                 )
@@ -344,7 +347,7 @@ class MainActivity : ComponentActivity() {
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "右上の＋ボタンから辞書を追加してください\n\n例:\nURL → ユーアールエル\nhttps:// → (削除)",
+                        "Tap + to add an entry\n\nExample:\nURL → pronounced spelling\nhttps:// → (leave blank to skip)",
                         color = Color.Gray,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
@@ -372,7 +375,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                     Text(
                                         text = if (entry.replacement.isEmpty())
-                                            "→ (読み上げない)"
+                                            "→ (skip)"
                                         else
                                             "→ ${entry.replacement}",
                                         fontSize = 14.sp,
@@ -392,12 +395,12 @@ class MainActivity : ComponentActivity() {
 
                                 // 編集ボタン
                                 IconButton(onClick = { onEditEntry(index) }) {
-                                    Icon(Icons.Default.Edit, contentDescription = "編集", tint = Color.Blue)
+                                    Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color.Blue)
                                 }
 
                                 // 削除ボタン
                                 IconButton(onClick = { onDeleteEntry(index) }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "削除", tint = Color.Red)
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red)
                                 }
                             }
                         }
@@ -439,23 +442,22 @@ class MainActivity : ComponentActivity() {
                     showDialog = false
                     Log.d("DictionaryEditScreen", "AlertDialog dismiss: showDialog = false")
                 },
-                title = { Text("確認") },
-                text = { Text("保存せずに終了しますか？") },
+                title = { Text("Leave without saving?") },
                 confirmButton = {
-                    TextButton(onClick = {
+                    OutlinedButton(onClick = {
                         showDialog = false
                         Log.d("DictionaryEditScreen", "AlertDialog confirm: showDialog = false")
                         onCancel()
                     }) {
-                        Text("はい")
+                        Text("YES")
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = {
+                    Button(onClick = {
                         showDialog = false
                         Log.d("DictionaryEditScreen", "AlertDialog dismissButton: showDialog = false")
                     }) {
-                        Text("いいえ")
+                        Text("NO")
                     }
                 }
             )
@@ -464,7 +466,7 @@ class MainActivity : ComponentActivity() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text(if (initialEntry == null) "新規辞書" else "辞書編集") },
+                    title = { Text(if (initialEntry == null) "New Entry" else "Edit Entry") },
                     navigationIcon = {
                         IconButton(onClick = {
                             if (hasChanges) {
@@ -474,7 +476,7 @@ class MainActivity : ComponentActivity() {
                                 onCancel()
                             }
                         }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "戻る")
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                         }
                     },
                     actions = {
@@ -492,21 +494,21 @@ class MainActivity : ComponentActivity() {
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Text("元の単語（読み上げたくない単語）", fontWeight = FontWeight.Bold)
+                Text("Word to replace", fontWeight = FontWeight.Bold)
                 OutlinedTextField(
                     value = original,
                     onValueChange = { original = it },
-                    label = { Text("例: URL, https://") },
+                    label = { Text("e.g. URL, https://") },
                     modifier = Modifier.fillMaxWidth().background(Color.Transparent),
                     singleLine = true,
                     colors = TextFieldDefaults.colors()
                 )
 
-                Text("置き換え後（空欄なら削除）", fontWeight = FontWeight.Bold)
+                Text("Replacement (blank = skip)", fontWeight = FontWeight.Bold)
                 OutlinedTextField(
                     value = replacement,
                     onValueChange = { replacement = it },
-                    label = { Text("例: ユーアールエル（空欄でも可）") },
+                    label = { Text("e.g. pronounced spelling (or blank)") },
                     modifier = Modifier.fillMaxWidth().background(Color.Transparent),
                     singleLine = true,
                     colors = TextFieldDefaults.colors()
@@ -516,7 +518,7 @@ class MainActivity : ComponentActivity() {
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("この辞書を有効にする", modifier = Modifier.weight(1f))
+                    Text("Enable this entry", modifier = Modifier.weight(1f))
                     Switch(checked = isEnabled, onCheckedChange = { isEnabled = it })
                 }
 
@@ -527,7 +529,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth().height(56.dp),
                     enabled = original.isNotBlank()
                 ) {
-                    Text("保存", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Save", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -549,15 +551,53 @@ class MainActivity : ComponentActivity() {
         var pitch by remember { mutableFloatStateOf(1.0f) }
         var currentSentenceIndex by remember { mutableIntStateOf(0) }
         var isEditMode by remember { mutableStateOf(false) }
+        // ★③ フォントサイズ：13(Small) / 16(Medium) / 20(Large)
+        var fontSize by remember { mutableFloatStateOf(16f) }
 
-        // ★編集中のテキストを保持する変数（新規追加）
+        // ★編集中のテキストを保持する変数
         var editingText by remember { mutableStateOf(text) }
+
+        // ★isEditMode時のバック確認ダイアログ表示フラグ
+        var showUnsavedDialog by remember { mutableStateOf(false) }
 
         // ★textが変更されたら編集用テキストも更新
         LaunchedEffect(text) {
             if (!isEditMode) {
                 editingText = text
             }
+        }
+
+        // ★バックジェスチャーのインターセプト：編集中のみ有効
+        // ホームジェスチャー（下スワイプでアプリ退出）はここに届かないので許容される
+        BackHandler(enabled = isEditMode) {
+            if (editingText != text) {
+                // 変更あり → ダイアログを出す
+                showUnsavedDialog = true
+            } else {
+                // 変更なし → そのまま編集モード解除
+                isEditMode = false
+            }
+        }
+
+        // ★未保存ダイアログ
+        if (showUnsavedDialog) {
+            AlertDialog(
+                onDismissRequest = { showUnsavedDialog = false },
+                title = { Text("Leave without saving?") },
+                // NOを目立つ塗りつぶしボタン、YESを控えめなアウトラインボタンにする
+                confirmButton = {
+                    OutlinedButton(onClick = {
+                        showUnsavedDialog = false
+                        editingText = text
+                        isEditMode = false
+                    }) { Text("YES") }
+                },
+                dismissButton = {
+                    Button(onClick = { showUnsavedDialog = false }) {
+                        Text("NO")
+                    }
+                }
+            )
         }
 
         val listState = rememberLazyListState()
@@ -607,22 +647,69 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // PDF / Word ファイルピッカー（両形式に対応）
+        // PDF / Word / Google Document ファイルピッカー（複数形式に対応）
         val docPickerLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.OpenDocument()
         ) { uri: Uri? ->
             uri?.let {
                 scope.launch(Dispatchers.IO) {
-                    // MIMEタイプを確認してPDFかWordか自動判定
+                    // MIMEタイプを確認してファイル形式を自動判定
                     val mimeType = context.contentResolver.getType(it) ?: ""
                     val text = when {
                         mimeType.contains("pdf") ->
                             extractTextFromPdf(context, it)
                         mimeType.contains("wordprocessingml") || mimeType.contains("msword") ->
                             extractTextFromDocx(context, it)
+                        // ★追加：Google DocumentやHTMLファイルの処理
+                        // Google DriveはGoogle DocをSAF経由でHTMLとして提供することがある
+                        mimeType.contains("google-apps.document") || mimeType.contains("text/html") ->
+                            extractTextFromHtml(context, it)
+                        // ★追加：プレーンテキストファイルの処理
+                        mimeType.startsWith("text/plain") ->
+                            context.contentResolver.openInputStream(it)
+                                ?.bufferedReader(Charsets.UTF_8)?.readText() ?: ""
                         else -> ""
                     }
-                    withContext(Dispatchers.Main) { if (text.isNotEmpty()) onUpdateText(text) }
+                    withContext(Dispatchers.Main) {
+                        if (text.isNotEmpty()) {
+                            onUpdateText(text)
+                        } else if (mimeType.contains("google-apps.document")) {
+                            // ★改善：content://URIは他アプリへの受け渡しが不安定なため
+                            // Google DriveのファイルIDを取り出してウェブURLで開く方式に変更
+                            try {
+                                // ★改善：ファイルIDの解析をやめて、content://URIを
+                                // Google Docsアプリ（パッケージ名で指定）に直接渡す
+                                // 「自分のストレージのURIを自分で開く」形にすることで確実に動作する
+                                val viewIntent = Intent(Intent.ACTION_VIEW, it)
+                                viewIntent.setPackage("com.google.android.apps.docs")
+                                viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                context.startActivity(viewIntent)
+                                Toast.makeText(
+                                    context,
+                                    "Select & copy text, then tap Paste to return",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } catch (e: Exception) {
+                                // フォールバック：ファイルID取得に失敗したらGoogleドライブを開く
+                                try {
+                                    val driveIntent = Intent(Intent.ACTION_VIEW,
+                                        Uri.parse("https://drive.google.com"))
+                                    context.startActivity(driveIntent)
+                                    Toast.makeText(
+                                        context,
+                                        "Open the Doc in Drive, copy text, then tap Paste",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } catch (e2: Exception) {
+                                    Toast.makeText(
+                                        context,
+                                        "Google Drive app not found",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -635,7 +722,8 @@ class MainActivity : ComponentActivity() {
                 }
                 override fun onComplete() {
                     isPlaying = false
-                    currentSentenceIndex = -1
+                    // ★修正：読了後も先頭をグレーハイライトで示す（-1だとハイライトが消えてしまうため0に変更）
+                    currentSentenceIndex = 0
                 }
                 override fun onError(msg: String) {
                     isPlaying = false
@@ -673,7 +761,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Icon(
                                 if (isEditMode) Icons.Default.Save else Icons.Default.Edit,
-                                contentDescription = if (isEditMode) "保存" else "編集",
+                                contentDescription = if (isEditMode) "Save" else "Edit",
                                 tint = MaterialTheme.colorScheme.primary
                             )
                         }
@@ -699,13 +787,13 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxWidth(), // fillMaxSize() から変更
                             minLines = 15, // 最小行数を15に設定
                             maxLines = 15, // 最大行数を15に設定
-                            placeholder = { Text("テキストを編集...") }
+                            placeholder = { Text("Edit text here...") }
                         )
                     } else {
                         // 表示モード（既存のコードそのまま）
                         if (text.isEmpty()) {
                             Text(
-                                text = "「プロンプト」ボタンで指示をコピーし、\nPerplexityの結果をここに貼付してください。",
+                                text = "Copy a prompt with the Prompts button,\nthen paste the Perplexity result here.",
                                 modifier = Modifier.padding(16.dp),
                                 color = Color.Gray
                             )
@@ -720,10 +808,15 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .background(
-                                                if (index == currentSentenceIndex && isPlaying)
-                                                    Color(0xFFFFEB3B)
-                                                else
-                                                    Color.Transparent
+                                                // ★修正：再生中は黄色、停止中は明るいグレーでハイライト
+                                                when {
+                                                    index == currentSentenceIndex && isPlaying ->
+                                                        Color(0xFFFFEB3B) // 黄色：読み上げ中
+                                                    index == currentSentenceIndex && !isPlaying &&
+                                                        currentSentenceIndex in sentences.indices ->
+                                                        Color(0xFFE0E0E0) // 明るいグレー：停止位置
+                                                    else -> Color.Transparent
+                                                }
                                             )
                                             .clickable {
                                                 ttsService?.setSpeechRate(speechRate)
@@ -734,8 +827,8 @@ class MainActivity : ComponentActivity() {
                                                 isPlaying = true
                                             }
                                             .padding(vertical = 4.dp),
-                                        fontSize = 16.sp,
-                                        lineHeight = 24.sp
+                                        fontSize = fontSize.sp,
+                                        lineHeight = (fontSize * 1.5f).sp
                                     )
                                 }
                             }
@@ -745,10 +838,49 @@ class MainActivity : ComponentActivity() {
 
                 // コントロール類
                 if (!isEditMode) {
+
+                    // ★追加：読み上げ進行度バー
+                    // canScrollForward/Backward のどちらかがtrueなら「画面に収まりきってない」
+                    // = スクロールが必要な長さ → バーを表示する意味がある
+                    val needsScroll = listState.canScrollForward || listState.canScrollBackward
+                    if (needsScroll) {
+                        // sentences.size-1 を分母にすることで、最初の文で0%、最後の文で100%になる
+                        val readProgress = if (sentences.size > 1) {
+                            (currentSentenceIndex.toFloat() / (sentences.size - 1).toFloat())
+                                .coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        }
+                        // アニメーション付きで進行度を滑らかに変化させる（300ミリ秒かけて動く）
+                        val animatedProgress by animateFloatAsState(
+                            targetValue = readProgress,
+                            animationSpec = tween(durationMillis = 300),
+                            label = "readProgress"
+                        )
+                        // パーセント表示と進行バーを横並びで表示
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            LinearProgressIndicator(
+                                progress = { animatedProgress },
+                                modifier = Modifier.weight(1f).height(6.dp),
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "${(animatedProgress * 100).toInt()}%",
+                                fontSize = 12.sp,
+                                color = Color.Gray
+                            )
+                        }
+                    }
+
                     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                         // 速度
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("速度 ${String.format(Locale.US, "%.1f", speechRate)}x", modifier = Modifier.weight(1f))
+                            Text("Speed ${String.format(Locale.US, "%.1f", speechRate)}x", modifier = Modifier.weight(1f))
                             Slider(
                                 value = speechRate,
                                 onValueChange = {
@@ -761,7 +893,7 @@ class MainActivity : ComponentActivity() {
                         }
                         // ピッチ
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("ピッチ ${String.format(Locale.US, "%.1f", pitch)}x", modifier = Modifier.weight(1f))
+                            Text("Pitch ${String.format(Locale.US, "%.1f", pitch)}x", modifier = Modifier.weight(1f))
                             Slider(
                                 value = pitch,
                                 onValueChange = {
@@ -807,20 +939,26 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.weight(1f).height(56.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = if (isPlaying) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
                         ) {
-                            Text(if (isPlaying) "停止" else "再生")
+                            Text(if (isPlaying) "Stop" else "Play")
                         }
 
-                        // PDF / Word ボタン（両形式のファイルピッカーを起動）
+                        // PDF / Word / Google Document ボタン（複数形式のファイルピッカーを起動）
                         Button(
                             onClick = {
                                 docPickerLauncher.launch(arrayOf(
                                     "application/pdf",
-                                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                    "application/vnd.google-apps.document", // ★追加：Google Document
+                                    "text/html",                             // ★追加：HTML形式
+                                    "text/plain"                             // ★追加：プレーンテキスト
                                 ))
                             },
                             modifier = Modifier.weight(1f).height(56.dp)
                         ) {
-                            Text("PDF/Word", fontSize = 11.sp)
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("PDF/Word", fontSize = 9.sp)
+                                Text("GDoc", fontSize = 9.sp)
+                            }
                         }
 
                         // 貼付ボタン
@@ -835,7 +973,7 @@ class MainActivity : ComponentActivity() {
                             },
                             modifier = Modifier.weight(1f).height(56.dp)
                         ) {
-                            Text("貼付", fontSize = 12.sp)
+                            Text("Paste", fontSize = 12.sp)
                         }
                     }
 
@@ -858,13 +996,12 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(20.dp))
-                                Text("Ｐ管理", fontSize = 10.sp)
+                                Text("Prompts", fontSize = 10.sp)
                             }
                         }
 
-                        // ★辞書ボタン（ここに追加）
+                        // 辞書ボタン
                         Button(
-                            // ★修正：画面遷移前に再生を停止する
                             onClick = {
                                 if (isPlaying) {
                                     ttsService?.stop()
@@ -877,7 +1014,29 @@ class MainActivity : ComponentActivity() {
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(Icons.Default.Book, contentDescription = null, modifier = Modifier.size(20.dp))
-                                Text("辞書", fontSize = 10.sp)
+                                Text("Dict", fontSize = 10.sp)
+                            }
+                        }
+
+                        // ★③ フォントサイズ切替ボタン：タップするたびにS→M→L→Sと循環する
+                        Button(
+                            onClick = {
+                                fontSize = when (fontSize) {
+                                    13f -> 16f
+                                    16f -> 20f
+                                    else -> 13f
+                                }
+                            },
+                            modifier = Modifier.weight(1f).height(56.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant)
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("Aa", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = when (fontSize) { 13f -> "S" 16f -> "M" else -> "L" },
+                                    fontSize = 10.sp
+                                )
                             }
                         }
                     }
@@ -901,15 +1060,15 @@ class MainActivity : ComponentActivity() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("プロンプト一覧") },
+                    title = { Text("Prompts") },
                     navigationIcon = {
                         IconButton(onClick = onNavigateBack) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "戻る")
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                         }
                     },
                     actions = {
                         IconButton(onClick = onCreatePrompt) {
-                            Icon(Icons.Default.Add, contentDescription = "新規作成")
+                            Icon(Icons.Default.Add, contentDescription = "Add new")
                         }
                     }
                 )
@@ -917,7 +1076,7 @@ class MainActivity : ComponentActivity() {
         ) { padding ->
             if (prompts.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                    Text("右上の＋ボタンからプロンプトを追加してください", color = Color.Gray)
+                    Text("Tap + to add a prompt", color = Color.Gray)
                 }
             } else {
                 LazyColumn(
@@ -945,10 +1104,10 @@ class MainActivity : ComponentActivity() {
                                 }
                                 Row {
                                     IconButton(onClick = { onEditPrompt(index) }) {
-                                        Icon(Icons.Default.Edit, contentDescription = "編集", tint = Color.Blue)
+                                        Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color.Blue)
                                     }
                                     IconButton(onClick = { onDeletePrompt(index) }) {
-                                        Icon(Icons.Default.Delete, contentDescription = "削除", tint = Color.Red)
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red)
                                     }
                                 }
                             }
@@ -1050,6 +1209,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Google DocumentやHTMLファイルからテキストを抽出する
+    // Google DriveはSAF経由でGoogle DocをHTMLとして提供することがある
+    // 既存のJsoupライブラリ（URLスクレイピング用に導入済み）を流用
+    private fun extractTextFromHtml(context: Context, uri: Uri): String {
+        return try {
+            val inputStream = context.contentResolver.openInputStream(uri) ?: return ""
+            val htmlContent = inputStream.bufferedReader(Charsets.UTF_8).readText()
+            inputStream.close()
+            // JsoupでHTMLタグを除去してプレーンテキストを抽出
+            val bodyText = Jsoup.parse(htmlContent).body().text()
+            // PDF用の改行整形処理を流用して仕上げる
+            TextProcessor.cleanPdfText(bodyText)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            ""
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         if (isBound) {
@@ -1087,23 +1264,22 @@ class MainActivity : ComponentActivity() {
                     showDialog = false
                     Log.d("PromptEditScreen", "AlertDialog dismiss: showDialog = false")
                 },
-                title = { Text("確認") },
-                text = { Text("保存せずに終了しますか？") },
+                title = { Text("Leave without saving?") },
                 confirmButton = {
-                    TextButton(onClick = {
+                    OutlinedButton(onClick = {
                         showDialog = false
                         Log.d("PromptEditScreen", "AlertDialog confirm: showDialog = false")
                         onCancel()
                     }) {
-                        Text("はい")
+                        Text("YES")
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = {
+                    Button(onClick = {
                         showDialog = false
                         Log.d("PromptEditScreen", "AlertDialog dismissButton: showDialog = false")
                     }) {
-                        Text("いいえ")
+                        Text("NO")
                     }
                 }
             )
@@ -1112,7 +1288,7 @@ class MainActivity : ComponentActivity() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text(if (initialPrompt == null) "新規プロンプト" else "プロンプト編集") },
+                    title = { Text(if (initialPrompt == null) "New Prompt" else "Edit Prompt") },
                     navigationIcon = {
                         IconButton(onClick = {
                             if (hasChanges) {
@@ -1122,12 +1298,12 @@ class MainActivity : ComponentActivity() {
                                 onCancel()
                             }
                         }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "戻る")
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                         }
                     },
                     actions = {
                         IconButton(onClick = { onSave(title, content) }) {
-                            Icon(Icons.Default.Save, contentDescription = "保存")
+                            Icon(Icons.Default.Save, contentDescription = "Save")
                         }
                     }
                 )
@@ -1143,17 +1319,17 @@ class MainActivity : ComponentActivity() {
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
-                    label = { Text("タイトル") },
+                    label = { Text("Title") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
 
-                Text("プロンプト内容", fontWeight = FontWeight.Bold)
+                Text("Content", fontWeight = FontWeight.Bold)
                 OutlinedTextField(
                     value = content,
                     onValueChange = { content = it },
-                    modifier = Modifier.fillMaxWidth().weight(1f).background(Color.Transparent), // ここを修正
-                    placeholder = { Text("ここに長いプロンプトを入力...") },
+                    modifier = Modifier.fillMaxWidth().weight(1f).background(Color.Transparent),
+                    placeholder = { Text("Enter prompt content here...") },
                     colors = TextFieldDefaults.colors()
                 )
 
@@ -1161,7 +1337,7 @@ class MainActivity : ComponentActivity() {
                     onClick = { onSave(title, content) },
                     modifier = Modifier.fillMaxWidth().height(56.dp)
                 ) {
-                    Text("保存", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Save", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
