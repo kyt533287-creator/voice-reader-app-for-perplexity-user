@@ -24,6 +24,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip                         // ★clip()：リップルを丸にクリップするために必要
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -31,7 +32,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Book      // ★追加
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.List
@@ -53,6 +53,22 @@ import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import java.util.Locale
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.Assistant
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.ui.window.Dialog                     // カスタムダイアログ用
+import androidx.compose.animation.AnimatedContent           // 画面遷移アニメーション用
+import androidx.compose.animation.slideInHorizontally       // 右/左からスライドイン
+import androidx.compose.animation.slideOutHorizontally      // 右/左へスライドアウト
+import androidx.compose.animation.togetherWith              // 入りと出を組み合わせる演算子
 
 // 画面定義
 enum class Screen {
@@ -215,104 +231,130 @@ class MainActivity : ComponentActivity() {
             sentences = TextProcessor.splitSentences(perplexityCleaned)
         }
 
-        // 画面遷移ロジック
-        when (currentScreen) {
-            Screen.Main -> {
-                MainScreen(
-                    text = mainText,
-                    sentences = sentences,
-                    onTextChange = { mainText = it },
-                    onNavigateToPrompts = { currentScreen = Screen.PromptList },
-                    onNavigateToDictionary = { currentScreen = Screen.DictionaryList },
-                    onUpdateText = { updateMainText(it) }
-                )
-            }
-            Screen.PromptList -> {
-                PromptListScreen(
-                    prompts = promptList,
-                    onNavigateBack = { currentScreen = Screen.Main },
-                    onEditPrompt = { index: Int -> // 型を明示
-                        editingPromptIndex = index
-                        currentScreen = Screen.PromptEdit
-                    },
-                    onCreatePrompt = {
-                        editingPromptIndex = -1
-                        currentScreen = Screen.PromptEdit
-                    },
-                    onDeletePrompt = { index: Int -> // 型を明示
-                        promptList.removeAt(index)
-                        savePrompts()
-                    },
-                    onSelectPrompt = { prompt: PromptItem -> // 型を明示
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val clip = android.content.ClipData.newPlainText("Prompt", prompt.content)
-                        clipboard.setPrimaryClip(clip)
-                        Toast.makeText(context, "Prompt copied", Toast.LENGTH_SHORT).show()
-                        currentScreen = Screen.Main
-                    }
-                )
-            }
-            Screen.PromptEdit -> {
-                PromptEditScreen(
-                    initialPrompt = if (editingPromptIndex >= 0) promptList[editingPromptIndex] else null,
-                    onSave = { title, content ->
-                        if (editingPromptIndex >= 0) {
-                            promptList[editingPromptIndex] = PromptItem(title, content)
-                        } else {
-                            promptList.add(PromptItem(title, content))
-                        }
-                        savePrompts()
-                        currentScreen = Screen.PromptList
-                    },
-                    onCancel = { currentScreen = Screen.PromptList }
-                )
-            }
-            Screen.DictionaryList -> {
-                DictionaryListScreen(
-                    dictionary = dictionaryList,
-                    onNavigateBack = { currentScreen = Screen.Main },
-                    onEditEntry = { index ->
-                        editingDictionaryIndex = index
-                        currentScreen = Screen.DictionaryEdit
-                    },
-                    onCreateEntry = {
-                        editingDictionaryIndex = -1
-                        currentScreen = Screen.DictionaryEdit
-                    },
-                    onDeleteEntry = { index ->
-                        dictionaryList.removeAt(index)
-                        saveDictionary()
-                    },
-                    onToggleEntry = { index ->
-                        val entry = dictionaryList[index]
-                        dictionaryList[index] = entry.copy(isEnabled = !entry.isEnabled)
-                        saveDictionary()
-                    }
-                )
-            }
+        // ★画面の「深さ」を定義（進む方向 vs 戻る方向を判定するために使う）
+        // 例：Main(0) → PromptList(1) は前進 → 右からスライドイン
+        //     PromptList(1) → Main(0) は後退 → 左からスライドイン
+        val screenDepth = mapOf(
+            Screen.Main to 0,
+            Screen.PromptList to 1,
+            Screen.DictionaryList to 1,
+            Screen.PromptEdit to 2,
+            Screen.DictionaryEdit to 2
+        )
 
-            // ★辞書編集画面（新規追加）
-            Screen.DictionaryEdit -> {
-                DictionaryEditScreen(
-                    initialEntry = if (editingDictionaryIndex >= 0) dictionaryList[editingDictionaryIndex] else null,
-                    onSave = { original, replacement, isEnabled ->
-                        if (editingDictionaryIndex >= 0) {
-                            dictionaryList[editingDictionaryIndex] = DictionaryEntry(original, replacement, isEnabled)
-                        } else {
-                            dictionaryList.add(DictionaryEntry(original, replacement, isEnabled))
+        // ★AnimatedContent：currentScreenが変わるたびにスライドアニメーションを実行
+        AnimatedContent(
+            modifier = Modifier.fillMaxSize(),  // ★スライドが全画面で動くように必須
+            targetState = currentScreen,
+            transitionSpec = {
+                val forward = (screenDepth[targetState] ?: 0) >= (screenDepth[initialState] ?: 0)
+                if (forward) {
+                    // 前進（深い画面へ）：右からスライドイン / 左へスライドアウト
+                    slideInHorizontally(animationSpec = tween(300)) { it } togetherWith
+                    slideOutHorizontally(animationSpec = tween(300)) { -it }
+                } else {
+                    // 後退（浅い画面へ）：左からスライドイン / 右へスライドアウト
+                    slideInHorizontally(animationSpec = tween(300)) { -it } togetherWith
+                    slideOutHorizontally(animationSpec = tween(300)) { it }
+                }
+            },
+            label = "screenTransition"
+        ) { screen ->
+            when (screen) {
+                Screen.Main -> {
+                    MainScreen(
+                        text = mainText,
+                        sentences = sentences,
+                        onTextChange = { mainText = it },
+                        onNavigateToPrompts = { currentScreen = Screen.PromptList },
+                        onNavigateToDictionary = { currentScreen = Screen.DictionaryList },
+                        onUpdateText = { updateMainText(it) }
+                    )
+                }
+                Screen.PromptList -> {
+                    PromptListScreen(
+                        prompts = promptList,
+                        onNavigateBack = { currentScreen = Screen.Main },
+                        onEditPrompt = { index: Int ->
+                            editingPromptIndex = index
+                            currentScreen = Screen.PromptEdit
+                        },
+                        onCreatePrompt = {
+                            editingPromptIndex = -1
+                            currentScreen = Screen.PromptEdit
+                        },
+                        onDeletePrompt = { index: Int ->
+                            promptList.removeAt(index)
+                            savePrompts()
+                        },
+                        onSelectPrompt = { prompt: PromptItem ->
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = android.content.ClipData.newPlainText("Prompt", prompt.content)
+                            clipboard.setPrimaryClip(clip)
+                            Toast.makeText(context, "Prompt copied", Toast.LENGTH_SHORT).show()
+                            currentScreen = Screen.Main
                         }
-                        saveDictionary()
-                        currentScreen = Screen.DictionaryList
-                    },
-                    onCancel = { currentScreen = Screen.DictionaryList }
-                )
+                    )
+                }
+                Screen.PromptEdit -> {
+                    PromptEditScreen(
+                        initialPrompt = if (editingPromptIndex >= 0) promptList[editingPromptIndex] else null,
+                        onSave = { title, content ->
+                            if (editingPromptIndex >= 0) {
+                                promptList[editingPromptIndex] = PromptItem(title, content)
+                            } else {
+                                promptList.add(PromptItem(title, content))
+                            }
+                            savePrompts()
+                            currentScreen = Screen.PromptList
+                        },
+                        onCancel = { currentScreen = Screen.PromptList }
+                    )
+                }
+                Screen.DictionaryList -> {
+                    DictionaryListScreen(
+                        dictionary = dictionaryList,
+                        onNavigateBack = { currentScreen = Screen.Main },
+                        onEditEntry = { index ->
+                            editingDictionaryIndex = index
+                            currentScreen = Screen.DictionaryEdit
+                        },
+                        onCreateEntry = {
+                            editingDictionaryIndex = -1
+                            currentScreen = Screen.DictionaryEdit
+                        },
+                        onDeleteEntry = { index ->
+                            dictionaryList.removeAt(index)
+                            saveDictionary()
+                        },
+                        onToggleEntry = { index ->
+                            val entry = dictionaryList[index]
+                            dictionaryList[index] = entry.copy(isEnabled = !entry.isEnabled)
+                            saveDictionary()
+                        }
+                    )
+                }
+                Screen.DictionaryEdit -> {
+                    DictionaryEditScreen(
+                        initialEntry = if (editingDictionaryIndex >= 0) dictionaryList[editingDictionaryIndex] else null,
+                        onSave = { original, replacement, isEnabled ->
+                            if (editingDictionaryIndex >= 0) {
+                                dictionaryList[editingDictionaryIndex] = DictionaryEntry(original, replacement, isEnabled)
+                            } else {
+                                dictionaryList.add(DictionaryEntry(original, replacement, isEnabled))
+                            }
+                            saveDictionary()
+                            currentScreen = Screen.DictionaryList
+                        },
+                        onCancel = { currentScreen = Screen.DictionaryList }
+                    )
+                }
             }
         }
     }
 
 
 
-    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun DictionaryListScreen(
         dictionary: List<DictionaryEntry>,
@@ -324,83 +366,102 @@ class MainActivity : ComponentActivity() {
     ) {
         BackHandler { onNavigateBack() }
 
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Dictionary") },
-                    navigationIcon = {
-                        IconButton(onClick = onNavigateBack) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = onCreateEntry) {
-                            Icon(Icons.Default.Add, contentDescription = "Add new")
+        // ★削除確認ダイアログ用状態
+        var showDeleteDialog by remember { mutableStateOf(false) }
+        var deleteTargetIndex by remember { mutableIntStateOf(-1) }
+
+        // ★削除確認ダイアログ（他のダイアログと同じネオブルータリストスタイル）
+        if (showDeleteDialog) {
+            Dialog(onDismissRequest = { showDeleteDialog = false }) {
+                Box(modifier = Modifier.wrapContentHeight().padding(end = 4.dp, bottom = 4.dp)) {
+                    Box(modifier = Modifier.matchParentSize().offset(x = 4.dp, y = 4.dp).background(Color.Black, RoundedCornerShape(16.dp)))
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(4.dp, Color.Black)) {
+                        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Delete this entry?", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Text("This action cannot be undone.", fontSize = 14.sp, color = Color.Gray)
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                // YES（控えめ：白背景 + 黒枠）
+                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
+                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(8.dp)))
+                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.White, RoundedCornerShape(8.dp)).clickable { showDeleteDialog = false; onDeleteEntry(deleteTargetIndex) }.padding(12.dp), contentAlignment = Alignment.Center) {
+                                        Text("YES", fontWeight = FontWeight.Bold, color = Color.Black)
+                                    }
+                                }
+                                // NO（目立つ：黒背景 + 白文字）
+                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
+                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color(0xFF444444), RoundedCornerShape(8.dp)))
+                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.Black, RoundedCornerShape(8.dp)).clickable { showDeleteDialog = false }.padding(12.dp), contentAlignment = Alignment.Center) {
+                                        Text("NO", fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+                                }
+                            }
                         }
                     }
-                )
+                }
             }
-        ) { padding ->
+        }
+
+        // ★ネオブルータリストデザイン
+        Column(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F0)).statusBarsPadding()) {  // ★ステータスバーの高さ分だけ上にパディング
+            Column {
+                Row(modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(42.dp)) {
+                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color.White, CircleShape).border(3.dp, Color.Black, CircleShape).clickable { onNavigateBack() }, contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp), tint = Color.Black)
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("DICTIONARY", fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f), color = Color.Black)
+                    Box(modifier = Modifier.size(42.dp)) {
+                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFFFF9C4), CircleShape).border(3.dp, Color.Black, CircleShape).clickable { onCreateEntry() }, contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Add, contentDescription = "Add", modifier = Modifier.size(20.dp), tint = Color.Black)
+                        }
+                    }
+                }
+                Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(Color.Black))
+            }
+
             if (dictionary.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize().padding(padding),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "Tap + to add an entry\n\nExample:\nURL → pronounced spelling\nhttps:// → (leave blank to skip)",
-                        color = Color.Gray,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Tap + to add an entry\n\nExample:\nURL → pronounced spelling\nhttps:// → (leave blank to skip)", color = Color.Gray, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(padding),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     itemsIndexed(dictionary) { index, entry ->
-                        Card(
-                            elevation = CardDefaults.cardElevation(4.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = entry.original,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 16.sp
+                        Box(modifier = Modifier.fillMaxWidth().padding(end = 3.dp, bottom = 3.dp)) {
+                            Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(3.dp, Color.Black)) {
+                                Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(text = entry.original, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                        Text(
+                                            text = if (entry.replacement.isEmpty()) "→ (skip)" else "→ ${entry.replacement}",
+                                            fontSize = 14.sp,
+                                            color = if (entry.replacement.isEmpty()) Color.Red else Color(0xFF4CAF50)
+                                        )
+                                    }
+                                    // ON/OFFスイッチ
+                                    Switch(checked = entry.isEnabled, onCheckedChange = { onToggleEntry(index) }, modifier = Modifier.padding(horizontal = 4.dp),
+                                        colors = SwitchDefaults.colors(checkedThumbColor = Color(0xFF0DF259), checkedTrackColor = Color.Black, uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444))
                                     )
-                                    Text(
-                                        text = if (entry.replacement.isEmpty())
-                                            "→ (skip)"
-                                        else
-                                            "→ ${entry.replacement}",
-                                        fontSize = 14.sp,
-                                        color = if (entry.replacement.isEmpty())
-                                            Color.Red
-                                        else
-                                            Color(0xFF4CAF50)
-                                    )
-                                }
-
-                                // ON/OFFスイッチ
-                                Switch(
-                                    checked = entry.isEnabled,
-                                    onCheckedChange = { onToggleEntry(index) },
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                )
-
-                                // 編集ボタン
-                                IconButton(onClick = { onEditEntry(index) }) {
-                                    Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color.Blue)
-                                }
-
-                                // 削除ボタン
-                                IconButton(onClick = { onDeleteEntry(index) }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    // 編集ボタン（大きく：押し間違い防止）
+                                    Box(modifier = Modifier.size(52.dp)) {
+                                        Box(modifier = Modifier.size(50.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                                        Box(modifier = Modifier.size(50.dp).clip(CircleShape).background(Color(0xFFE5F1FF), CircleShape).border(2.dp, Color.Black, CircleShape).clickable { onEditEntry(index) }, contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.Edit, contentDescription = "Edit", modifier = Modifier.size(26.dp), tint = Color.Black)
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    // 削除ボタン（大きく・確認ダイアログ付き）
+                                    Box(modifier = Modifier.size(52.dp)) {
+                                        Box(modifier = Modifier.size(50.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                                        Box(modifier = Modifier.size(50.dp).clip(CircleShape).background(Color(0xFFFFE5E5), CircleShape).border(2.dp, Color.Black, CircleShape).clickable { deleteTargetIndex = index; showDeleteDialog = true }, contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(26.dp), tint = Color.Black)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -410,7 +471,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun DictionaryEditScreen(
         initialEntry: DictionaryEntry?,
@@ -425,112 +485,93 @@ class MainActivity : ComponentActivity() {
         val hasChanges = original != (initialEntry?.original ?: "") ||
                 replacement != (initialEntry?.replacement ?: "") ||
                 isEnabled != (initialEntry?.isEnabled ?: true)
-        Log.d("DictionaryEditScreen", "hasChanges: $hasChanges")
 
         BackHandler {
-            if (hasChanges) {
-                showDialog = true
-                Log.d("DictionaryEditScreen", "BackHandler: showDialog = true")
-            } else {
-                onCancel()
-            }
+            if (hasChanges) showDialog = true else onCancel()
         }
 
+        // ★⑤ネオブルータリスト未保存ダイアログ
         if (showDialog) {
-            AlertDialog(
-                onDismissRequest = {
-                    showDialog = false
-                    Log.d("DictionaryEditScreen", "AlertDialog dismiss: showDialog = false")
-                },
-                title = { Text("Leave without saving?") },
-                confirmButton = {
-                    OutlinedButton(onClick = {
-                        showDialog = false
-                        Log.d("DictionaryEditScreen", "AlertDialog confirm: showDialog = false")
-                        onCancel()
-                    }) {
-                        Text("YES")
-                    }
-                },
-                dismissButton = {
-                    Button(onClick = {
-                        showDialog = false
-                        Log.d("DictionaryEditScreen", "AlertDialog dismissButton: showDialog = false")
-                    }) {
-                        Text("NO")
+            Dialog(onDismissRequest = { showDialog = false }) {
+                Box(modifier = Modifier.wrapContentHeight().padding(end = 4.dp, bottom = 4.dp)) {
+                    Box(modifier = Modifier.matchParentSize().offset(x = 4.dp, y = 4.dp).background(Color.Black, RoundedCornerShape(16.dp)))
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(4.dp, Color.Black)) {
+                        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Leave without saving?", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Text("Your changes will be lost.", fontSize = 14.sp, color = Color.Gray)
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
+                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(8.dp)))
+                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.White, RoundedCornerShape(8.dp)).clickable { showDialog = false; onCancel() }.padding(12.dp), contentAlignment = Alignment.Center) {
+                                        Text("YES", fontWeight = FontWeight.Bold, color = Color.Black)
+                                    }
+                                }
+                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
+                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color(0xFF444444), RoundedCornerShape(8.dp)))
+                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.Black, RoundedCornerShape(8.dp)).clickable { showDialog = false }.padding(12.dp), contentAlignment = Alignment.Center) {
+                                        Text("NO", fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-            )
+            }
         }
 
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text(if (initialEntry == null) "New Entry" else "Edit Entry") },
-                    navigationIcon = {
-                        IconButton(onClick = {
-                            if (hasChanges) {
-                                showDialog = true
-                                Log.d("DictionaryEditScreen", "navigationIcon: showDialog = true")
-                            } else {
-                                onCancel()
-                            }
-                        }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { onSave(original, replacement, isEnabled) }) {
-                            Icon(Icons.Default.Save, contentDescription = "保存")
+        // ★③ネオブルータリスト編集画面
+        Column(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F0)).statusBarsPadding()) {  // ★ステータスバーの高さ分だけ上にパディング
+            Column {
+                Row(modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(42.dp)) {
+                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color.White, CircleShape).border(3.dp, Color.Black, CircleShape).clickable { if (hasChanges) showDialog = true else onCancel() }, contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp), tint = Color.Black)
                         }
                     }
-                )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(if (initialEntry == null) "NEW ENTRY" else "EDIT ENTRY", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f), color = Color.Black)
+                    Box(modifier = Modifier.size(42.dp)) {
+                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFE8F5E9), CircleShape).border(3.dp, Color.Black, CircleShape).clickable { if (original.isNotBlank()) onSave(original, replacement, isEnabled) }, contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Save, contentDescription = "Save", modifier = Modifier.size(20.dp), tint = Color.Black)
+                        }
+                    }
+                }
+                Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(Color.Black))
             }
-        ) { padding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Text("Word to replace", fontWeight = FontWeight.Bold)
-                OutlinedTextField(
-                    value = original,
-                    onValueChange = { original = it },
-                    label = { Text("e.g. URL, https://") },
-                    modifier = Modifier.fillMaxWidth().background(Color.Transparent),
-                    singleLine = true,
-                    colors = TextFieldDefaults.colors()
-                )
 
-                Text("Replacement (blank = skip)", fontWeight = FontWeight.Bold)
-                OutlinedTextField(
-                    value = replacement,
-                    onValueChange = { replacement = it },
-                    label = { Text("e.g. pronounced spelling (or blank)") },
-                    modifier = Modifier.fillMaxWidth().background(Color.Transparent),
-                    singleLine = true,
-                    colors = TextFieldDefaults.colors()
-                )
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Enable this entry", modifier = Modifier.weight(1f))
-                    Switch(checked = isEnabled, onCheckedChange = { isEnabled = it })
+            // ★キーボード回避付き入力フィールド群
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Word to replace", fontWeight = FontWeight.Bold, color = Color.Black)
+                Box(modifier = Modifier.fillMaxWidth().padding(end = 3.dp, bottom = 3.dp)) {
+                    Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(3.dp, Color.Black)) {
+                        OutlinedTextField(value = original, onValueChange = { original = it }, placeholder = { Text("e.g. URL, https://") }, modifier = Modifier.fillMaxWidth(), singleLine = true, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.Transparent, unfocusedBorderColor = Color.Transparent, focusedTextColor = Color.Black, unfocusedTextColor = Color.Black))
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Button(
-                    onClick = { onSave(original, replacement, isEnabled) },
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    enabled = original.isNotBlank()
-                ) {
-                    Text("Save", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text("Replacement (blank = skip)", fontWeight = FontWeight.Bold, color = Color.Black)
+                Box(modifier = Modifier.fillMaxWidth().padding(end = 3.dp, bottom = 3.dp)) {
+                    Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(3.dp, Color.Black)) {
+                        OutlinedTextField(value = replacement, onValueChange = { replacement = it }, placeholder = { Text("e.g. pronounced spelling (or blank)") }, modifier = Modifier.fillMaxWidth(), singleLine = true, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.Transparent, unfocusedBorderColor = Color.Transparent, focusedTextColor = Color.Black, unfocusedTextColor = Color.Black))
+                    }
                 }
+
+                // ON/OFFスイッチ行（ネオブルータリスト風）
+                Box(modifier = Modifier.fillMaxWidth().padding(end = 3.dp, bottom = 3.dp)) {
+                    Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(3.dp, Color.Black)) {
+                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Enable this entry", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                            Switch(checked = isEnabled, onCheckedChange = { isEnabled = it },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Color(0xFF0DF259), checkedTrackColor = Color.Black, uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444))
+                            )
+                        }
+                    }
+                }
+
             }
         }
     }
@@ -579,25 +620,35 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // ★未保存ダイアログ
+        // ★⑤ネオブルータリスト未保存ダイアログ
         if (showUnsavedDialog) {
-            AlertDialog(
-                onDismissRequest = { showUnsavedDialog = false },
-                title = { Text("Leave without saving?") },
-                // NOを目立つ塗りつぶしボタン、YESを控えめなアウトラインボタンにする
-                confirmButton = {
-                    OutlinedButton(onClick = {
-                        showUnsavedDialog = false
-                        editingText = text
-                        isEditMode = false
-                    }) { Text("YES") }
-                },
-                dismissButton = {
-                    Button(onClick = { showUnsavedDialog = false }) {
-                        Text("NO")
+            Dialog(onDismissRequest = { showUnsavedDialog = false }) {
+                Box(modifier = Modifier.wrapContentHeight().padding(end = 4.dp, bottom = 4.dp)) {
+                    Box(modifier = Modifier.matchParentSize().offset(x = 4.dp, y = 4.dp).background(Color.Black, RoundedCornerShape(16.dp)))
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(4.dp, Color.Black)) {
+                        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Leave without saving?", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Text("Your changes will be lost.", fontSize = 14.sp, color = Color.Gray)
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                // YES（控えめ：白背景 + 黒枠）
+                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
+                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(8.dp)))
+                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.White, RoundedCornerShape(8.dp)).clickable { showUnsavedDialog = false; editingText = text; isEditMode = false }.padding(12.dp), contentAlignment = Alignment.Center) {
+                                        Text("YES", fontWeight = FontWeight.Bold, color = Color.Black)
+                                    }
+                                }
+                                // NO（目立つ：黒背景 + 白文字）
+                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
+                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color(0xFF444444), RoundedCornerShape(8.dp)))
+                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.Black, RoundedCornerShape(8.dp)).clickable { showUnsavedDialog = false }.padding(12.dp), contentAlignment = Alignment.Center) {
+                                        Text("NO", fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-            )
+            }
         }
 
         val listState = rememberLazyListState()
@@ -731,104 +782,136 @@ class MainActivity : ComponentActivity() {
             })
         }
 
+        // ★ネオブルータリストデザイン（太い黒ボーダー + ハードオフセットシャドウ）
         Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Voice Reader", fontWeight = FontWeight.Bold) },
-                    actions = {
-                        // ★編集/保存ボタンの切り替え
-                        IconButton(
-                            onClick = {
-                                if (isEditMode) {
-                                    // 保存処理：編集されたテキストを反映
-                                    onUpdateText(editingText)
-                                    isEditMode = false
-                                    // ★修正：テキストが変わった可能性があるので先頭にリセット
-                                    // 古いインデックスだと違う段落を指す危険があるため
-                                    currentSentenceIndex = 0
-                                } else {
-                                    // ★修正：編集モードに入る前に再生を停止する
-                                    // 編集中に読み上げが続くとユーザーが混乱するため
-                                    if (isPlaying) {
-                                        ttsService?.stop()
-                                        isPlaying = false
-                                    }
-                                    // 編集モードに切り替え
-                                    editingText = text
-                                    isEditMode = true
-                                }
-                            }
+            bottomBar = {
+                // ★広告エリアのプレースホルダー（実際のAdMobはAd版プロジェクトで実装済み）
+                Column {
+                    Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(Color.Black))
+                    Box(
+                        modifier = Modifier.fillMaxWidth().background(Color(0xFFF0F0F0)).padding(8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(0.75f)
+                                .border(2.dp, Color(0xFFBBBBBB), RoundedCornerShape(8.dp))
+                                .padding(vertical = 6.dp, horizontal = 16.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                if (isEditMode) Icons.Default.Save else Icons.Default.Edit,
-                                contentDescription = if (isEditMode) "Save" else "Edit",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
+                            Text("ADVERTISEMENT", fontSize = 8.sp, color = Color(0xFFAAAAAA), fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
                         }
                     }
-                )
+                }
             }
         ) { padding ->
-            Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-                // メインテキストエリア
+            Column(modifier = Modifier.fillMaxSize().padding(padding).imePadding()) {  // ★キーボードせり上がり対応
+                // ★テキストカード（太い黒ボーダー + 右下4dpオフセットシャドウ）
+                // オフセットシャドウの仕組み：黒いBoxを4dp右下にずらして後ろに置くことで再現
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(500.dp) // 新しい高さ
-                        .padding(16.dp)
-                        .background(Color.White)
-                        .border(1.dp, Color.LightGray)
+                        .weight(1f)
+                        .padding(start = 16.dp, end = 20.dp, top = 8.dp, bottom = 12.dp)
                 ) {
-                    if (isEditMode) {
-                        // ★編集モード：editingTextを編集
-                        OutlinedTextField(
-                            value = editingText,
-                            onValueChange = { editingText = it },
-                            modifier = Modifier.fillMaxWidth(), // fillMaxSize() から変更
-                            minLines = 15, // 最小行数を15に設定
-                            maxLines = 15, // 最大行数を15に設定
-                            placeholder = { Text("Edit text here...") }
-                        )
-                    } else {
-                        // 表示モード（既存のコードそのまま）
-                        if (text.isEmpty()) {
-                            Text(
-                                text = "Copy a prompt with the Prompts button,\nthen paste the Perplexity result here.",
-                                modifier = Modifier.padding(16.dp),
-                                color = Color.Gray
-                            )
-                        } else {
-                            LazyColumn(
-                                state = listState,
-                                modifier = Modifier.fillMaxSize().padding(16.dp)
-                            ) {
-                                itemsIndexed(sentences) { index, sentence ->
+                    // シャドウ層（黒、4dp右下オフセット）
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .offset(x = 4.dp, y = 4.dp)
+                            .background(Color.Black, RoundedCornerShape(16.dp))
+                    )
+                    // 本体カード（白地 + 4dp黒ボーダー）
+                    Card(
+                        modifier = Modifier.fillMaxSize(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black),
+                        elevation = CardDefaults.cardElevation(0.dp),
+                        border = BorderStroke(4.dp, Color.Black)
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            if (isEditMode) {
+                                OutlinedTextField(
+                                    value = editingText,
+                                    onValueChange = { editingText = it },
+                                    modifier = Modifier.fillMaxSize().padding(top = 56.dp),
+                                    placeholder = { Text("Edit text here...") },
+                                    // ★②カードに枠があるので、TextField自体の枠線は透明にして「謎の線」を消す
+                                    // ★ダークモード時も文字を黒固定にする
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = Color.Transparent,
+                                        unfocusedBorderColor = Color.Transparent,
+                                        focusedTextColor = Color.Black,
+                                        unfocusedTextColor = Color.Black
+                                    )
+                                )
+                            } else {
+                                if (text.isEmpty()) {
                                     Text(
-                                        text = sentence,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(
-                                                // ★修正：再生中は黄色、停止中は明るいグレーでハイライト
-                                                when {
-                                                    index == currentSentenceIndex && isPlaying ->
-                                                        Color(0xFFFFEB3B) // 黄色：読み上げ中
-                                                    index == currentSentenceIndex && !isPlaying &&
-                                                        currentSentenceIndex in sentences.indices ->
-                                                        Color(0xFFE0E0E0) // 明るいグレー：停止位置
-                                                    else -> Color.Transparent
-                                                }
+                                        text = "Copy a prompt with the Prompts button,\nthen paste the Perplexity result here.",
+                                        modifier = Modifier.padding(16.dp).padding(top = 56.dp),
+                                        color = Color.Gray
+                                    )
+                                } else {
+                                    LazyColumn(
+                                        state = listState,
+                                        modifier = Modifier.fillMaxSize().padding(16.dp).padding(top = 40.dp)
+                                    ) {
+                                        itemsIndexed(sentences) { index, sentence ->
+                                            Text(
+                                                text = sentence,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .background(
+                                                        when {
+                                                            index == currentSentenceIndex && isPlaying ->
+                                                                Color(0xFFFFF112) // 黄色：読み上げ中
+                                                            index == currentSentenceIndex && !isPlaying &&
+                                                                currentSentenceIndex in sentences.indices ->
+                                                                Color(0xFFE0E0E0)
+                                                            else -> Color.Transparent
+                                                        }
+                                                    )
+                                                    .clickable {
+                                                        ttsService?.setSpeechRate(speechRate)
+                                                        ttsService?.setPitch(pitch)
+                                                        setupTtsListener()
+                                                        ttsService?.speakList(sentences, index)
+                                                        currentSentenceIndex = index
+                                                        isPlaying = true
+                                                    }
+                                                    .padding(vertical = 4.dp),
+                                                fontSize = fontSize.sp,
+                                                lineHeight = (fontSize * 1.5f).sp
                                             )
-                                            .clickable {
-                                                ttsService?.setSpeechRate(speechRate)
-                                                ttsService?.setPitch(pitch)
-                                                setupTtsListener()
-                                                ttsService?.speakList(sentences, index)
-                                                currentSentenceIndex = index
-                                                isPlaying = true
+                                        }
+                                    }
+                                }
+                            }
+                            // ★鉛筆ボタン（カード右上・太黒ボーダー + 2dpシャドウ）
+                            Box(
+                                modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp)
+                            ) {
+                                Box(modifier = Modifier.size(48.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                                Box(
+                                    modifier = Modifier.size(48.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.White, CircleShape)
+                                        .border(2.dp, Color.Black, CircleShape)
+                                        .clickable {
+                                            if (isEditMode) {
+                                                onUpdateText(editingText); isEditMode = false; currentSentenceIndex = 0
+                                            } else {
+                                                if (isPlaying) { ttsService?.stop(); isPlaying = false }
+                                                editingText = text; isEditMode = true
                                             }
-                                            .padding(vertical = 4.dp),
-                                        fontSize = fontSize.sp,
-                                        lineHeight = (fontSize * 1.5f).sp
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        if (isEditMode) Icons.Default.Save else Icons.Default.Edit,
+                                        contentDescription = if (isEditMode) "Save" else "Edit",
+                                        tint = Color.Black, modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
@@ -836,208 +919,250 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // コントロール類
+                // コントロール類（編集モード時は非表示）
                 if (!isEditMode) {
-
-                    // ★追加：読み上げ進行度バー
-                    // canScrollForward/Backward のどちらかがtrueなら「画面に収まりきってない」
-                    // = スクロールが必要な長さ → バーを表示する意味がある
+                    // 進行度バー
                     val needsScroll = listState.canScrollForward || listState.canScrollBackward
                     if (needsScroll) {
-                        // sentences.size-1 を分母にすることで、最初の文で0%、最後の文で100%になる
                         val readProgress = if (sentences.size > 1) {
-                            (currentSentenceIndex.toFloat() / (sentences.size - 1).toFloat())
-                                .coerceIn(0f, 1f)
-                        } else {
-                            0f
-                        }
-                        // アニメーション付きで進行度を滑らかに変化させる（300ミリ秒かけて動く）
+                            (currentSentenceIndex.toFloat() / (sentences.size - 1).toFloat()).coerceIn(0f, 1f)
+                        } else 0f
                         val animatedProgress by animateFloatAsState(
-                            targetValue = readProgress,
-                            animationSpec = tween(durationMillis = 300),
-                            label = "readProgress"
+                            targetValue = readProgress, animationSpec = tween(durationMillis = 300), label = "readProgress"
                         )
-                        // パーセント表示と進行バーを横並びで表示
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            LinearProgressIndicator(
-                                progress = { animatedProgress },
-                                modifier = Modifier.weight(1f).height(6.dp),
-                            )
+                            // ★カスタム進行バー（黒トラック + 緑フィル・3dp統一）
+                            Box(modifier = Modifier.weight(1f).height(3.dp).background(Color(0xFF444444), RoundedCornerShape(50))) {
+                                Box(modifier = Modifier.fillMaxWidth(animatedProgress).fillMaxHeight().background(Color(0xFF0DF259), RoundedCornerShape(50)))
+                            }
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "${(animatedProgress * 100).toInt()}%",
-                                fontSize = 12.sp,
-                                color = Color.Gray
-                            )
+                            Text("${(animatedProgress * 100).toInt()}%", fontSize = 12.sp, color = Color.Gray)
                         }
                     }
 
-                    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        // 速度
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Speed ${String.format(Locale.US, "%.1f", speechRate)}x", modifier = Modifier.weight(1f))
-                            Slider(
-                                value = speechRate,
-                                onValueChange = {
-                                    speechRate = it
-                                    ttsService?.setSpeechRate(it)
-                                },
-                                valueRange = 0.5f..3.0f,
-                                modifier = Modifier.weight(2f)
-                            )
-                        }
-                        // ピッチ
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Pitch ${String.format(Locale.US, "%.1f", pitch)}x", modifier = Modifier.weight(1f))
-                            Slider(
-                                value = pitch,
-                                onValueChange = {
-                                    pitch = it
-                                    ttsService?.setPitch(it)
-                                },
-                                valueRange = 0.5f..2.0f,
-                                modifier = Modifier.weight(2f)
-                            )
-                        }
-                    }
-
-                    // ボタンエリア
+                    // ★SPEEDスライダー（黒トラック + 緑サム：HTMLのカスタムスライダーに近づける）
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("SPEED", fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(48.dp), color = Color.Black)
+                        // ★カスタムスライダー（3dp細トラック + 緑サム）
+                        Slider(
+                            value = speechRate,
+                            onValueChange = { speechRate = it; ttsService?.setSpeechRate(it) },
+                            valueRange = 0.5f..3.0f,
+                            modifier = Modifier.weight(1f),
+                            thumb = {
+                                Box(modifier = Modifier.size(14.dp).background(Color(0xFF0DF259), CircleShape).border(2.dp, Color.Black, CircleShape))
+                            },
+                            track = { sliderState ->
+                                val fraction = ((sliderState.value - 0.5f) / (3.0f - 0.5f)).coerceIn(0f, 1f)
+                                Box(modifier = Modifier.fillMaxWidth().height(3.dp).background(Color(0xFF444444), RoundedCornerShape(50))) {
+                                    Box(modifier = Modifier.fillMaxWidth(fraction).fillMaxHeight().background(Color(0xFF0DF259), RoundedCornerShape(50)))
+                                }
+                            }
+                        )
+                        Text("${String.format(Locale.US, "%.1f", speechRate)}x", fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(36.dp), color = Color.Black)
+                    }
+
+                    // ★PITCHスライダー（黒トラック + 緑サム）
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("PITCH", fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(48.dp), color = Color.Black)
+                        Slider(
+                            value = pitch,
+                            onValueChange = { pitch = it; ttsService?.setPitch(it) },
+                            valueRange = 0.5f..2.0f,
+                            modifier = Modifier.weight(1f),
+                            thumb = {
+                                Box(modifier = Modifier.size(14.dp).background(Color(0xFF0DF259), CircleShape).border(2.dp, Color.Black, CircleShape))
+                            },
+                            track = { sliderState ->
+                                val fraction = ((sliderState.value - 0.5f) / (2.0f - 0.5f)).coerceIn(0f, 1f)
+                                Box(modifier = Modifier.fillMaxWidth().height(3.dp).background(Color(0xFF444444), RoundedCornerShape(50))) {
+                                    Box(modifier = Modifier.fillMaxWidth(fraction).fillMaxHeight().background(Color(0xFF0DF259), RoundedCornerShape(50)))
+                                }
+                            }
+                        )
+                        Text(
+                            when { pitch < 0.85f -> "Low"; pitch < 1.3f -> "Mid"; else -> "High" },
+                            fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(36.dp), color = Color.Black
+                        )
+                    }
+
+                    // ★5つのアイコンボタン行（黒ボーダー + 2dpオフセットシャドウ）
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // 再生ボタン
-                        Button(
-                            onClick = {
-                                if (isPlaying) {
-                                    ttsService?.stop()
-                                    isPlaying = false
-                                } else {
-                                    if (sentences.isNotEmpty()) {
-                                        // ★修正：停止した位置から再開する
-                                        // currentSentenceIndexが範囲外（読了後など）なら先頭に戻す
-                                        val startFrom = if (currentSentenceIndex in sentences.indices) {
-                                            currentSentenceIndex
-                                        } else {
-                                            0
+                        // 共通構造：黒シャドウBoxを後ろに置き、その上に色付きボタンBoxを重ねる
+                        // 1. 貼り付け（ピンク #FFE5E5）
+                        Box(modifier = Modifier.weight(1f)) {
+                            Box(modifier = Modifier.fillMaxWidth().height(56.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                            Box(
+                                modifier = Modifier.fillMaxWidth().height(56.dp)
+                                    .background(Color(0xFFFFE5E5), RoundedCornerShape(12.dp))
+                                    .border(3.dp, Color.Black, RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val clipData = clipboard.primaryClip
+                                        if (clipData != null && clipData.itemCount > 0) onUpdateText(clipData.getItemAt(0).text.toString())
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) { Icon(Icons.Default.ContentPaste, contentDescription = "Paste", modifier = Modifier.size(28.dp), tint = Color.Black) }
+                        }
+                        // 2. ファイル（ライトブルー #E5F1FF）
+                        Box(modifier = Modifier.weight(1f)) {
+                            Box(modifier = Modifier.fillMaxWidth().height(56.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                            Box(
+                                modifier = Modifier.fillMaxWidth().height(56.dp)
+                                    .background(Color(0xFFE5F1FF), RoundedCornerShape(12.dp))
+                                    .border(3.dp, Color.Black, RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        docPickerLauncher.launch(arrayOf(
+                                            "application/pdf",
+                                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                            "application/vnd.google-apps.document",
+                                            "text/html", "text/plain"
+                                        ))
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) { Icon(Icons.Default.FolderOpen, contentDescription = "Open File", modifier = Modifier.size(28.dp), tint = Color.Black) }
+                        }
+                        // 3. プロンプト（黄色 #FFF9C4）
+                        Box(modifier = Modifier.weight(1f)) {
+                            Box(modifier = Modifier.fillMaxWidth().height(56.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                            Box(
+                                modifier = Modifier.fillMaxWidth().height(56.dp)
+                                    .background(Color(0xFFFFF9C4), RoundedCornerShape(12.dp))
+                                    .border(3.dp, Color.Black, RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        if (isPlaying) { ttsService?.stop(); isPlaying = false }
+                                        onNavigateToPrompts()
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) { Icon(Icons.Default.Assistant, contentDescription = "Prompts", modifier = Modifier.size(28.dp), tint = Color.Black) }
+                        }
+                        // 4. 辞書（ライトグリーン #E8F5E9）
+                        Box(modifier = Modifier.weight(1f)) {
+                            Box(modifier = Modifier.fillMaxWidth().height(56.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                            Box(
+                                modifier = Modifier.fillMaxWidth().height(56.dp)
+                                    .background(Color(0xFFE8F5E9), RoundedCornerShape(12.dp))
+                                    .border(3.dp, Color.Black, RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        if (isPlaying) { ttsService?.stop(); isPlaying = false }
+                                        onNavigateToDictionary()
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) { Icon(Icons.Default.MenuBook, contentDescription = "Dictionary", modifier = Modifier.size(28.dp), tint = Color.Black) }
+                        }
+                        // 5. フォントサイズ（ライトパープル #F3E5F5）
+                        Box(modifier = Modifier.weight(1f)) {
+                            Box(modifier = Modifier.fillMaxWidth().height(56.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                            Box(
+                                modifier = Modifier.fillMaxWidth().height(56.dp)
+                                    .background(Color(0xFFF3E5F5), RoundedCornerShape(12.dp))
+                                    .border(3.dp, Color.Black, RoundedCornerShape(12.dp))
+                                    .clickable { fontSize = when (fontSize) { 13f -> 16f; 16f -> 20f; else -> 13f } },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                // ★lineHeightをfontSizeと揃えてText上下の余白をゼロに近づけ、センターに見えるよう修正
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("Aa", fontSize = 16.sp, fontWeight = FontWeight.Bold, lineHeight = 16.sp, color = Color.Black)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(when (fontSize) { 13f -> "S"; 16f -> "M"; else -> "L" }, fontSize = 10.sp, lineHeight = 10.sp, color = Color.Black)
+                                }
+                            }
+                        }
+                    }
+
+                    // ★輸送コントロール（◄| 楕円再生ボタン |►）
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // ◄| 前の段落（丸・黒ボーダー + 2dpシャドウ）
+                        Box(modifier = Modifier.size(50.dp)) {
+                            Box(modifier = Modifier.size(48.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                            Box(
+                                modifier = Modifier.size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White, CircleShape)
+                                    .border(3.dp, Color.Black, CircleShape)
+                                    .clickable {
+                                        val prev = maxOf(0, currentSentenceIndex - 1)
+                                        currentSentenceIndex = prev
+                                        if (isPlaying) {
+                                            ttsService?.setSpeechRate(speechRate); ttsService?.setPitch(pitch)
+                                            setupTtsListener(); ttsService?.speakList(sentences, prev)
                                         }
-                                        ttsService?.setSpeechRate(speechRate)
-                                        ttsService?.setPitch(pitch)
-                                        setupTtsListener()
-                                        ttsService?.speakList(sentences, startFrom)
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) { Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", modifier = Modifier.size(28.dp), tint = Color.Black) }
+                        }
 
-                                        currentSentenceIndex = startFrom
-                                        isPlaying = true
+                        Spacer(modifier = Modifier.width(24.dp))
+
+                        // ★再生/停止ボタン（大きな楕円 + 黒ボーダー + 4dpシャドウ）
+                        // 外側Boxで影の分のスペースを確保してからシャドウとボタンを重ねる
+                        Box(modifier = Modifier.size(144.dp, 60.dp)) {
+                            Box(modifier = Modifier.size(140.dp, 56.dp).offset(x = 4.dp, y = 4.dp).background(Color.Black, RoundedCornerShape(50)))
+                            Button(
+                                onClick = {
+                                    if (isPlaying) {
+                                        ttsService?.stop(); isPlaying = false
+                                    } else {
+                                        if (sentences.isNotEmpty()) {
+                                            val startFrom = if (currentSentenceIndex in sentences.indices) currentSentenceIndex else 0
+                                            ttsService?.setSpeechRate(speechRate); ttsService?.setPitch(pitch)
+                                            setupTtsListener(); ttsService?.speakList(sentences, startFrom)
+                                            currentSentenceIndex = startFrom; isPlaying = true
+                                        }
                                     }
-                                }
-                            },
-                            modifier = Modifier.weight(1f).height(56.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = if (isPlaying) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-                        ) {
-                            Text(if (isPlaying) "Stop" else "Play")
-                        }
-
-                        // PDF / Word / Google Document ボタン（複数形式のファイルピッカーを起動）
-                        Button(
-                            onClick = {
-                                docPickerLauncher.launch(arrayOf(
-                                    "application/pdf",
-                                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                    "application/vnd.google-apps.document", // ★追加：Google Document
-                                    "text/html",                             // ★追加：HTML形式
-                                    "text/plain"                             // ★追加：プレーンテキスト
-                                ))
-                            },
-                            modifier = Modifier.weight(1f).height(56.dp)
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("PDF/Word", fontSize = 9.sp)
-                                Text("GDoc", fontSize = 9.sp)
-                            }
-                        }
-
-                        // 貼付ボタン
-                        Button(
-                            onClick = {
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                val clipData = clipboard.primaryClip
-                                if (clipData != null && clipData.itemCount > 0) {
-                                    val pasted = clipData.getItemAt(0).text.toString()
-                                    onUpdateText(pasted)
-                                }
-                            },
-                            modifier = Modifier.weight(1f).height(56.dp)
-                        ) {
-                            Text("Paste", fontSize = 12.sp)
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        // プロンプト画面へ遷移ボタン
-                        Button(
-                            // ★修正：画面遷移前に再生を停止する
-                            onClick = {
-                                if (isPlaying) {
-                                    ttsService?.stop()
-                                    isPlaying = false
-                                }
-                                onNavigateToPrompts()
-                            },
-                            modifier = Modifier.weight(1f).height(56.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(20.dp))
-                                Text("Prompts", fontSize = 10.sp)
-                            }
-                        }
-
-                        // 辞書ボタン
-                        Button(
-                            onClick = {
-                                if (isPlaying) {
-                                    ttsService?.stop()
-                                    isPlaying = false
-                                }
-                                onNavigateToDictionary()
-                            },
-                            modifier = Modifier.weight(1f).height(56.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Default.Book, contentDescription = null, modifier = Modifier.size(20.dp))
-                                Text("Dict", fontSize = 10.sp)
-                            }
-                        }
-
-                        // ★③ フォントサイズ切替ボタン：タップするたびにS→M→L→Sと循環する
-                        Button(
-                            onClick = {
-                                fontSize = when (fontSize) {
-                                    13f -> 16f
-                                    16f -> 20f
-                                    else -> 13f
-                                }
-                            },
-                            modifier = Modifier.weight(1f).height(56.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant)
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Aa", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                                Text(
-                                    text = when (fontSize) { 13f -> "S" 16f -> "M" else -> "L" },
-                                    fontSize = 10.sp
+                                },
+                                modifier = Modifier.size(140.dp, 56.dp),
+                                shape = RoundedCornerShape(50),
+                                border = BorderStroke(4.dp, Color.Black),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isPlaying) MaterialTheme.colorScheme.error else Color(0xFF3B82F6)
+                                ),
+                                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
+                            ) {
+                                Icon(
+                                    if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                    contentDescription = if (isPlaying) "Stop" else "Play",
+                                    modifier = Modifier.size(36.dp)
                                 )
                             }
+                        }
+
+                        Spacer(modifier = Modifier.width(24.dp))
+
+                        // |► 次の段落（丸・黒ボーダー + 2dpシャドウ）
+                        Box(modifier = Modifier.size(50.dp)) {
+                            Box(modifier = Modifier.size(48.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                            Box(
+                                modifier = Modifier.size(48.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White, CircleShape)
+                                    .border(3.dp, Color.Black, CircleShape)
+                                    .clickable {
+                                        val next = minOf(sentences.size - 1, currentSentenceIndex + 1)
+                                        currentSentenceIndex = next
+                                        if (isPlaying) {
+                                            ttsService?.setSpeechRate(speechRate); ttsService?.setPitch(pitch)
+                                            setupTtsListener(); ttsService?.speakList(sentences, next)
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) { Icon(Icons.Default.SkipNext, contentDescription = "Next", modifier = Modifier.size(28.dp), tint = Color.Black) }
                         }
                     }
                 }
@@ -1045,7 +1170,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun PromptListScreen(
         prompts: List<PromptItem>,
@@ -1057,57 +1181,119 @@ class MainActivity : ComponentActivity() {
     ) {
         BackHandler { onNavigateBack() }
 
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Prompts") },
-                    navigationIcon = {
-                        IconButton(onClick = onNavigateBack) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = onCreatePrompt) {
-                            Icon(Icons.Default.Add, contentDescription = "Add new")
+        // ★削除確認ダイアログ用状態
+        var showDeleteDialog by remember { mutableStateOf(false) }
+        var deleteTargetIndex by remember { mutableIntStateOf(-1) }
+
+        // ★削除確認ダイアログ（他のダイアログと同じネオブルータリストスタイル）
+        if (showDeleteDialog) {
+            Dialog(onDismissRequest = { showDeleteDialog = false }) {
+                Box(modifier = Modifier.wrapContentHeight().padding(end = 4.dp, bottom = 4.dp)) {
+                    Box(modifier = Modifier.matchParentSize().offset(x = 4.dp, y = 4.dp).background(Color.Black, RoundedCornerShape(16.dp)))
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(4.dp, Color.Black)) {
+                        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Delete this prompt?", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Text("This action cannot be undone.", fontSize = 14.sp, color = Color.Gray)
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                // YES（控えめ：白背景 + 黒枠）
+                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
+                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(8.dp)))
+                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.White, RoundedCornerShape(8.dp)).clickable { showDeleteDialog = false; onDeletePrompt(deleteTargetIndex) }.padding(12.dp), contentAlignment = Alignment.Center) {
+                                        Text("YES", fontWeight = FontWeight.Bold, color = Color.Black)
+                                    }
+                                }
+                                // NO（目立つ：黒背景 + 白文字）
+                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
+                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color(0xFF444444), RoundedCornerShape(8.dp)))
+                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.Black, RoundedCornerShape(8.dp)).clickable { showDeleteDialog = false }.padding(12.dp), contentAlignment = Alignment.Center) {
+                                        Text("NO", fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+                                }
+                            }
                         }
                     }
-                )
+                }
             }
-        ) { padding ->
+        }
+
+        // ★ネオブルータリストデザイン：TopAppBarを廃止し、手動でヘッダーを描く
+        Column(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F0)).statusBarsPadding()) {  // ★ステータスバーの高さ分だけ上にパディング
+            // ヘッダー行（黒枠 + 4dp黒ライン区切り）
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 戻るボタン（丸・黒枠 + 2dpシャドウ）
+                    Box(modifier = Modifier.size(42.dp)) {
+                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(Color.White, CircleShape).border(3.dp, Color.Black, CircleShape).clickable { onNavigateBack() },
+                            contentAlignment = Alignment.Center
+                        ) { Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp), tint = Color.Black) }
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("PROMPTS", fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f), color = Color.Black)
+                    // 追加ボタン（丸・黄背景 + 黒枠 + 2dpシャドウ）
+                    Box(modifier = Modifier.size(42.dp)) {
+                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFFFF9C4), CircleShape).border(3.dp, Color.Black, CircleShape).clickable { onCreatePrompt() },
+                            contentAlignment = Alignment.Center
+                        ) { Icon(Icons.Default.Add, contentDescription = "Add", modifier = Modifier.size(20.dp), tint = Color.Black) }
+                    }
+                }
+                Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(Color.Black))
+            }
+
+            // コンテンツ
             if (prompts.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("Tap + to add a prompt", color = Color.Gray)
                 }
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(padding),
+                    modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     itemsIndexed(prompts) { index, prompt ->
-                        Card(
-                            elevation = CardDefaults.cardElevation(4.dp),
-                            modifier = Modifier.fillMaxWidth().clickable { onSelectPrompt(prompt) }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                        // ★各カード：黒枠 + 右下3dpシャドウ
+                        Box(modifier = Modifier.fillMaxWidth().padding(end = 3.dp, bottom = 3.dp)) {
+                            Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                            Card(
+                                modifier = Modifier.fillMaxWidth().clickable { onSelectPrompt(prompt) },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black),
+                                elevation = CardDefaults.cardElevation(0.dp),
+                                border = BorderStroke(3.dp, Color.Black)
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(prompt.title, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                                    Text(
-                                        text = if (prompt.content.length > 30) prompt.content.take(30) + "..." else prompt.content,
-                                        fontSize = 12.sp,
-                                        color = Color.Gray
-                                    )
-                                }
-                                Row {
-                                    IconButton(onClick = { onEditPrompt(index) }) {
-                                        Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color.Blue)
+                                Row(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(prompt.title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                        Text(
+                                            text = if (prompt.content.length > 40) prompt.content.take(40) + "..." else prompt.content,
+                                            fontSize = 12.sp, color = Color.Gray
+                                        )
                                     }
-                                    IconButton(onClick = { onDeletePrompt(index) }) {
-                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    // 編集ボタン（青背景・大きく：押し間違い防止）
+                                    Box(modifier = Modifier.size(52.dp)) {
+                                        Box(modifier = Modifier.size(50.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                                        Box(modifier = Modifier.size(50.dp).clip(CircleShape).background(Color(0xFFE5F1FF), CircleShape).border(2.dp, Color.Black, CircleShape).clickable { onEditPrompt(index) }, contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.Edit, contentDescription = "Edit", modifier = Modifier.size(26.dp), tint = Color.Black)
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    // 削除ボタン（ピンク背景・大きく・確認ダイアログ付き）
+                                    Box(modifier = Modifier.size(52.dp)) {
+                                        Box(modifier = Modifier.size(50.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                                        Box(modifier = Modifier.size(50.dp).clip(CircleShape).background(Color(0xFFFFE5E5), CircleShape).border(2.dp, Color.Black, CircleShape).clickable { deleteTargetIndex = index; showDeleteDialog = true }, contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete", modifier = Modifier.size(26.dp), tint = Color.Black)
+                                        }
                                     }
                                 }
                             }
@@ -1235,7 +1421,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun PromptEditScreen(
         initialPrompt: PromptItem?,
@@ -1247,97 +1432,92 @@ class MainActivity : ComponentActivity() {
         var showDialog by remember { mutableStateOf(false) }
 
         val hasChanges = title != (initialPrompt?.title ?: "") || content != (initialPrompt?.content ?: "")
-        Log.d("PromptEditScreen", "hasChanges: $hasChanges")
 
         BackHandler {
-            if (hasChanges) {
-                showDialog = true
-                Log.d("PromptEditScreen", "BackHandler: showDialog = true")
-            } else {
-                onCancel()
-            }
+            if (hasChanges) showDialog = true else onCancel()
         }
 
+        // ★⑤ネオブルータリスト未保存ダイアログ
         if (showDialog) {
-            AlertDialog(
-                onDismissRequest = {
-                    showDialog = false
-                    Log.d("PromptEditScreen", "AlertDialog dismiss: showDialog = false")
-                },
-                title = { Text("Leave without saving?") },
-                confirmButton = {
-                    OutlinedButton(onClick = {
-                        showDialog = false
-                        Log.d("PromptEditScreen", "AlertDialog confirm: showDialog = false")
-                        onCancel()
-                    }) {
-                        Text("YES")
-                    }
-                },
-                dismissButton = {
-                    Button(onClick = {
-                        showDialog = false
-                        Log.d("PromptEditScreen", "AlertDialog dismissButton: showDialog = false")
-                    }) {
-                        Text("NO")
+            Dialog(onDismissRequest = { showDialog = false }) {
+                Box(modifier = Modifier.wrapContentHeight().padding(end = 4.dp, bottom = 4.dp)) {
+                    Box(modifier = Modifier.matchParentSize().offset(x = 4.dp, y = 4.dp).background(Color.Black, RoundedCornerShape(16.dp)))
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(4.dp, Color.Black)) {
+                        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text("Leave without saving?", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Text("Your changes will be lost.", fontSize = 14.sp, color = Color.Gray)
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                // YES（控えめ：白背景 + 黒枠）
+                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
+                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(8.dp)))
+                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.White, RoundedCornerShape(8.dp)).clickable { showDialog = false; onCancel() }.padding(12.dp), contentAlignment = Alignment.Center) {
+                                        Text("YES", fontWeight = FontWeight.Bold, color = Color.Black)
+                                    }
+                                }
+                                // NO（目立つ：黒背景 + 白文字）
+                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
+                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color(0xFF444444), RoundedCornerShape(8.dp)))
+                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.Black, RoundedCornerShape(8.dp)).clickable { showDialog = false }.padding(12.dp), contentAlignment = Alignment.Center) {
+                                        Text("NO", fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-            )
+            }
         }
 
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text(if (initialPrompt == null) "New Prompt" else "Edit Prompt") },
-                    navigationIcon = {
-                        IconButton(onClick = {
-                            if (hasChanges) {
-                                showDialog = true
-                                Log.d("PromptEditScreen", "navigationIcon: showDialog = true")
-                            } else {
-                                onCancel()
-                            }
-                        }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { onSave(title, content) }) {
-                            Icon(Icons.Default.Save, contentDescription = "Save")
+        // ★③ネオブルータリスト編集画面（TopAppBar廃止）
+        Column(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F0)).statusBarsPadding()) {  // ★ステータスバーの高さ分だけ上にパディング
+            // ヘッダー
+            Column {
+                Row(modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(42.dp)) {
+                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color.White, CircleShape).border(3.dp, Color.Black, CircleShape).clickable { if (hasChanges) showDialog = true else onCancel() }, contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp), tint = Color.Black)
                         }
                     }
-                )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(if (initialPrompt == null) "NEW PROMPT" else "EDIT PROMPT", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f), color = Color.Black)
+                    Box(modifier = Modifier.size(42.dp)) {
+                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFE8F5E9), CircleShape).border(3.dp, Color.Black, CircleShape).clickable { onSave(title, content) }, contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Save, contentDescription = "Save", modifier = Modifier.size(20.dp), tint = Color.Black)
+                        }
+                    }
+                }
+                Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(Color.Black))
             }
-        ) { padding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Title") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
 
-                Text("Content", fontWeight = FontWeight.Bold)
-                OutlinedTextField(
-                    value = content,
-                    onValueChange = { content = it },
-                    modifier = Modifier.fillMaxWidth().weight(1f).background(Color.Transparent),
-                    placeholder = { Text("Enter prompt content here...") },
-                    colors = TextFieldDefaults.colors()
-                )
-
-                Button(
-                    onClick = { onSave(title, content) },
-                    modifier = Modifier.fillMaxWidth().height(56.dp)
-                ) {
-                    Text("Save", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            // 入力フィールド群（キーボード回避付き）
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // ★②Titleラベルをカードの外（上）に配置し、枠との重なりを解消
+                Text("Title", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
+                Box(modifier = Modifier.fillMaxWidth().padding(end = 3.dp, bottom = 3.dp)) {
+                    Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(3.dp, Color.Black)) {
+                        OutlinedTextField(
+                            value = title, onValueChange = { title = it },
+                            placeholder = { Text("Enter title here...") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                            // ★ダークモード時も文字を黒固定にする
+                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.Transparent, unfocusedBorderColor = Color.Transparent, focusedTextColor = Color.Black, unfocusedTextColor = Color.Black)
+                        )
+                    }
+                }
+                Text("Content", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
+                // コンテンツ入力（残りスペースを占有）
+                Box(modifier = Modifier.fillMaxWidth().weight(1f).padding(end = 3.dp, bottom = 3.dp)) {
+                    Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
+                    Card(modifier = Modifier.fillMaxWidth().fillMaxHeight(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(3.dp, Color.Black)) {
+                        OutlinedTextField(
+                            value = content, onValueChange = { content = it },
+                            modifier = Modifier.fillMaxSize(), placeholder = { Text("Enter prompt content here...") },
+                            // ★ダークモード時も文字を黒固定にする
+                            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.Transparent, unfocusedBorderColor = Color.Transparent, focusedTextColor = Color.Black, unfocusedTextColor = Color.Black)
+                        )
+                    }
                 }
             }
         }

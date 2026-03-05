@@ -32,6 +32,7 @@
     <!-- ↓ メイン画面（ユーザーが最初に見る画面）の設定 -->
         <activity
             android:name=".MainActivity"
+            android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"
             android:exported="true"
             android:label="VoiceReader"
