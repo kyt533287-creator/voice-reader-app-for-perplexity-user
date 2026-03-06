@@ -41,7 +41,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import android.content.res.Configuration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -471,6 +473,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @OptIn(ExperimentalLayoutApi::class)
     @Composable
     fun DictionaryEditScreen(
         initialEntry: DictionaryEntry?,
@@ -519,26 +522,33 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // ★横向き + キーボード表示中の検知
+        val isKeyboardVisible = WindowInsets.isImeVisible
+        val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
         // ★③ネオブルータリスト編集画面
         Column(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F0)).statusBarsPadding()) {  // ★ステータスバーの高さ分だけ上にパディング
-            Column {
-                Row(modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(modifier = Modifier.size(42.dp)) {
-                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
-                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color.White, CircleShape).border(3.dp, Color.Black, CircleShape).clickable { if (hasChanges) showDialog = true else onCancel() }, contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp), tint = Color.Black)
+            // ★横向き + キーボード表示中はヘッダーを丸ごと非表示（テキスト入力スペース確保）
+            if (!isLandscape || !isKeyboardVisible) {
+                Column {
+                    Row(modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.size(42.dp)) {
+                            Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                            Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color.White, CircleShape).border(3.dp, Color.Black, CircleShape).clickable { if (hasChanges) showDialog = true else onCancel() }, contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp), tint = Color.Black)
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(if (initialEntry == null) "NEW ENTRY" else "EDIT ENTRY", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f), color = Color.Black)
+                        Box(modifier = Modifier.size(42.dp)) {
+                            Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                            Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFE8F5E9), CircleShape).border(3.dp, Color.Black, CircleShape).clickable { if (original.isNotBlank()) onSave(original, replacement, isEnabled) }, contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Save, contentDescription = "Save", modifier = Modifier.size(20.dp), tint = Color.Black)
+                            }
                         }
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(if (initialEntry == null) "NEW ENTRY" else "EDIT ENTRY", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f), color = Color.Black)
-                    Box(modifier = Modifier.size(42.dp)) {
-                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
-                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFE8F5E9), CircleShape).border(3.dp, Color.Black, CircleShape).clickable { if (original.isNotBlank()) onSave(original, replacement, isEnabled) }, contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Save, contentDescription = "Save", modifier = Modifier.size(20.dp), tint = Color.Black)
-                        }
-                    }
+                    Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(Color.Black))
                 }
-                Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(Color.Black))
             }
 
             // ★キーボード回避付き入力フィールド群
@@ -577,7 +587,7 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    @OptIn(ExperimentalMaterial3Api::class)
+    @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
     @Composable
     fun MainScreen(
         text: String,
@@ -782,11 +792,16 @@ class MainActivity : ComponentActivity() {
             })
         }
 
+        // ★キーボード（IME）が表示中かどうか検知（横向き編集時のスペース確保のため）
+        val isKeyboardVisible = WindowInsets.isImeVisible
+        // ★横向きかどうか検知（横向き時に一部UIを非表示にするため）
+        val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
         // ★ネオブルータリストデザイン（太い黒ボーダー + ハードオフセットシャドウ）
         Scaffold(
             bottomBar = {
-                // ★広告エリアのプレースホルダー（実際のAdMobはAd版プロジェクトで実装済み）
-                Column {
+                // ★広告エリアのプレースホルダー（キーボード表示中は非表示にしてテキスト編集スペースを確保）
+                if (!isKeyboardVisible) Column {
                     Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(Color.Black))
                     Box(
                         modifier = Modifier.fillMaxWidth().background(Color(0xFFF0F0F0)).padding(8.dp),
@@ -834,7 +849,11 @@ class MainActivity : ComponentActivity() {
                                 OutlinedTextField(
                                     value = editingText,
                                     onValueChange = { editingText = it },
-                                    modifier = Modifier.fillMaxSize().padding(top = 56.dp),
+                                    // ★横向き時はtopではなくbottomにpadding（ボタンが右下に移動するため）
+                                    modifier = Modifier.fillMaxSize().padding(
+                                        top = if (isLandscape) 4.dp else 56.dp,
+                                        bottom = if (isLandscape && !isKeyboardVisible) 56.dp else 4.dp
+                                    ),
                                     placeholder = { Text("Edit text here...") },
                                     // ★②カードに枠があるので、TextField自体の枠線は透明にして「謎の線」を消す
                                     // ★ダークモード時も文字を黒固定にする
@@ -849,13 +868,18 @@ class MainActivity : ComponentActivity() {
                                 if (text.isEmpty()) {
                                     Text(
                                         text = "Copy a prompt with the Prompts button,\nthen paste the Perplexity result here.",
-                                        modifier = Modifier.padding(16.dp).padding(top = 56.dp),
+                                        modifier = Modifier.padding(16.dp).padding(
+                                            top = if (isLandscape) 4.dp else 56.dp
+                                        ),
                                         color = Color.Gray
                                     )
                                 } else {
                                     LazyColumn(
                                         state = listState,
-                                        modifier = Modifier.fillMaxSize().padding(16.dp).padding(top = 40.dp)
+                                        modifier = Modifier.fillMaxSize().padding(16.dp).padding(
+                                            top = if (isLandscape) 4.dp else 40.dp,
+                                            bottom = if (isLandscape && !isKeyboardVisible) 48.dp else 0.dp
+                                        )
                                     ) {
                                         itemsIndexed(sentences) { index, sentence ->
                                             Text(
@@ -888,9 +912,16 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             }
-                            // ★鉛筆ボタン（カード右上・太黒ボーダー + 2dpシャドウ）
+                            // ★鉛筆ボタン（縦:右上固定 / 横:キーボードなし時のみ右下に表示）
+                            if (!isLandscape || !isKeyboardVisible) {
                             Box(
-                                modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp)
+                                modifier = Modifier
+                                    .align(if (isLandscape) Alignment.BottomEnd else Alignment.TopEnd)
+                                    .padding(
+                                        top = if (!isLandscape) 8.dp else 0.dp,
+                                        bottom = if (isLandscape) 8.dp else 0.dp,
+                                        end = 8.dp
+                                    )
                             ) {
                                 Box(modifier = Modifier.size(48.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
                                 Box(
@@ -915,15 +946,16 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                             }
+                            } // if (!isLandscape || !isKeyboardVisible)
                         }
                     }
                 }
 
                 // コントロール類（編集モード時は非表示）
                 if (!isEditMode) {
-                    // 進行度バー
+                    // 進行度バー（横向き時は非表示）
                     val needsScroll = listState.canScrollForward || listState.canScrollBackward
-                    if (needsScroll) {
+                    if (needsScroll && !isLandscape) {
                         val readProgress = if (sentences.size > 1) {
                             (currentSentenceIndex.toFloat() / (sentences.size - 1).toFloat()).coerceIn(0f, 1f)
                         } else 0f
@@ -1421,6 +1453,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @OptIn(ExperimentalLayoutApi::class)
     @Composable
     fun PromptEditScreen(
         initialPrompt: PromptItem?,
@@ -1468,28 +1501,34 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // ★横向き + キーボード表示中の検知
+        val isKeyboardVisible = WindowInsets.isImeVisible
+        val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
         // ★③ネオブルータリスト編集画面（TopAppBar廃止）
         Column(modifier = Modifier.fillMaxSize().background(Color(0xFFF5F5F0)).statusBarsPadding()) {  // ★ステータスバーの高さ分だけ上にパディング
-            // ヘッダー
-            Column {
-                Row(modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(modifier = Modifier.size(42.dp)) {
-                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
-                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color.White, CircleShape).border(3.dp, Color.Black, CircleShape).clickable { if (hasChanges) showDialog = true else onCancel() }, contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp), tint = Color.Black)
+            // ★横向き + キーボード表示中はヘッダーを丸ごと非表示（テキスト入力スペース確保）
+            if (!isLandscape || !isKeyboardVisible) {
+                Column {
+                    Row(modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.size(42.dp)) {
+                            Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                            Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color.White, CircleShape).border(3.dp, Color.Black, CircleShape).clickable { if (hasChanges) showDialog = true else onCancel() }, contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp), tint = Color.Black)
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(if (initialPrompt == null) "NEW PROMPT" else "EDIT PROMPT", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f), color = Color.Black)
+                        Box(modifier = Modifier.size(42.dp)) {
+                            Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
+                            Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFE8F5E9), CircleShape).border(3.dp, Color.Black, CircleShape).clickable { onSave(title, content) }, contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Save, contentDescription = "Save", modifier = Modifier.size(20.dp), tint = Color.Black)
+                            }
                         }
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(if (initialPrompt == null) "NEW PROMPT" else "EDIT PROMPT", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f), color = Color.Black)
-                    Box(modifier = Modifier.size(42.dp)) {
-                        Box(modifier = Modifier.size(40.dp).offset(x = 2.dp, y = 2.dp).background(Color.Black, CircleShape))
-                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFE8F5E9), CircleShape).border(3.dp, Color.Black, CircleShape).clickable { onSave(title, content) }, contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Save, contentDescription = "Save", modifier = Modifier.size(20.dp), tint = Color.Black)
-                        }
-                    }
+                    Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(Color.Black))
                 }
-                Box(modifier = Modifier.fillMaxWidth().height(4.dp).background(Color.Black))
-            }
+            } // if (!isLandscape || !isKeyboardVisible)
 
             // 入力フィールド群（キーボード回避付き）
             Column(modifier = Modifier.fillMaxSize().padding(16.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
