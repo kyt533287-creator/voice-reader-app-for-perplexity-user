@@ -1,6 +1,8 @@
 package com.example.voicereader
 
 import android.Manifest
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
@@ -489,6 +491,15 @@ class MainActivity : ComponentActivity() {
                 replacement != (initialEntry?.replacement ?: "") ||
                 isEnabled != (initialEntry?.isEnabled ?: true)
 
+        // ★この画面の間だけ縦固定。出たら回転を元に戻す
+        val activity = LocalContext.current as? Activity
+        DisposableEffect(Unit) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            onDispose {
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+
         BackHandler {
             if (hasChanges) showDialog = true else onCancel()
         }
@@ -553,7 +564,8 @@ class MainActivity : ComponentActivity() {
 
             // ★キーボード回避付き入力フィールド群
             Column(modifier = Modifier.fillMaxSize().padding(16.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Word to replace", fontWeight = FontWeight.Bold, color = Color.Black)
+                // ★ラベル：横向き時は非表示（スペース節約）
+                if (!isLandscape) Text("Word to replace", fontWeight = FontWeight.Bold, color = Color.Black)
                 Box(modifier = Modifier.fillMaxWidth().padding(end = 3.dp, bottom = 3.dp)) {
                     Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
                     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(3.dp, Color.Black)) {
@@ -561,7 +573,8 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                Text("Replacement (blank = skip)", fontWeight = FontWeight.Bold, color = Color.Black)
+                // ★ラベル：横向き時は非表示（スペース節約）
+                if (!isLandscape) Text("Replacement (blank = skip)", fontWeight = FontWeight.Bold, color = Color.Black)
                 Box(modifier = Modifier.fillMaxWidth().padding(end = 3.dp, bottom = 3.dp)) {
                     Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
                     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(3.dp, Color.Black)) {
@@ -1466,6 +1479,15 @@ class MainActivity : ComponentActivity() {
 
         val hasChanges = title != (initialPrompt?.title ?: "") || content != (initialPrompt?.content ?: "")
 
+        // ★この画面の間だけ縦固定。出たら回転を元に戻す
+        val activity = LocalContext.current as? Activity
+        DisposableEffect(Unit) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            onDispose {
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+
         BackHandler {
             if (hasChanges) showDialog = true else onCancel()
         }
@@ -1532,8 +1554,8 @@ class MainActivity : ComponentActivity() {
 
             // 入力フィールド群（キーボード回避付き）
             Column(modifier = Modifier.fillMaxSize().padding(16.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                // ★②Titleラベルをカードの外（上）に配置し、枠との重なりを解消
-                Text("Title", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
+                // ★②Titleラベル：横向き時は非表示（スペース節約）
+                if (!isLandscape) Text("Title", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
                 Box(modifier = Modifier.fillMaxWidth().padding(end = 3.dp, bottom = 3.dp)) {
                     Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
                     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(3.dp, Color.Black)) {
@@ -1545,7 +1567,8 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                Text("Content", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
+                // ★Contentラベル：横向き時は非表示（スペース節約）
+                if (!isLandscape) Text("Content", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
                 // コンテンツ入力（残りスペースを占有）
                 Box(modifier = Modifier.fillMaxWidth().weight(1f).padding(end = 3.dp, bottom = 3.dp)) {
                     Box(modifier = Modifier.matchParentSize().offset(x = 3.dp, y = 3.dp).background(Color.Black, RoundedCornerShape(12.dp)))
