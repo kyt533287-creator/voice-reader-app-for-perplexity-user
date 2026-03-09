@@ -2,6 +2,13 @@
 
 import android.Manifest
 import android.app.Activity
+import com.google.android.gms.ads.AdError
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.FullScreenContentCallback
+import com.google.android.gms.ads.LoadAdError
+import com.google.android.gms.ads.MobileAds
+import com.google.android.gms.ads.interstitial.InterstitialAd
+import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
 import android.content.pm.ActivityInfo
 import android.content.ClipboardManager
 import android.content.ComponentName
@@ -88,6 +95,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource  // ★�
 import androidx.compose.foundation.interaction.collectIsPressedAsState   // ★ボタン押下状態の検知用
 import androidx.compose.ui.text.TextStyle                  // テキストフィールドのスタイル
 import androidx.compose.ui.text.style.TextAlign            // テキスト右寄せ等
+import com.example.voicereader.BuildConfig
 
 // 画面定義
 enum class Screen {
@@ -113,6 +121,11 @@ class MainActivity : ComponentActivity() {
 
     private var ttsService: TtsService? = null
     private var isBound = false
+
+    // インタースティシャル広告
+    private var interstitialAd: InterstitialAd? = null
+    private var adPlayCount = 0          // 再生終了カウンター
+    private val AD_INTERVAL = 3          // 何回に1回広告を出すか
 
     // 権限リクエスト
     private val requestPermissionLauncher = registerForActivityResult(
@@ -141,6 +154,10 @@ class MainActivity : ComponentActivity() {
                 requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
+
+        // AdMob 初期化（広告ロードより前に必須）
+        MobileAds.initialize(this)
+        loadInterstitialAd()
 
         // PDFBox初期化
         try {
@@ -1013,6 +1030,8 @@ class MainActivity : ComponentActivity() {
                     isPlaying = false
                     // ★修正：読了後も先頭をグレーハイライトで示す（-1だとハイライトが消えてしまうため0に変更）
                     currentSentenceIndex = 0
+                    // 再生終了のたびにカウントし、3回に1回インタースティシャル広告を表示
+                    activity?.showInterstitialAdIfReady()
                 }
                 override fun onError(msg: String) {
                     isPlaying = false
@@ -1133,7 +1152,7 @@ class MainActivity : ComponentActivity() {
                     BottomSheetScaffold(
                         modifier             = Modifier.fillMaxSize(),
                         scaffoldState        = scaffoldState,
-                        sheetPeekHeight      = if (isLandscape) 125.dp else 170.dp,  // ★縦170dp（広告ゾーンとSPEEDバーの誤爆防止で10dp追加）横125dp（Transportのみ・テキスト1行以上確保）
+                        sheetPeekHeight      = if (isLandscape) 125.dp else 205.dp,  // ★縦205dp（170+35=ADオーバーレイ分を加算。実質見える量は170dp相当）横125dp（Transportのみ）
                         sheetContainerColor  = paperColor,
                         sheetShadowElevation = 16.dp,
                         containerColor       = bgColor,
@@ -1369,7 +1388,7 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(15.dp))  // ★20→15dp（底部余白）
+                                Spacer(modifier = Modifier.height(35.dp))  // ★広告スペース分の余白（35dp）
                             }
                         }
                     ) { innerPadding ->
@@ -1404,20 +1423,18 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-            }
 
-            // 広告バナー（キーボード非表示時のみ）
-            if (!isKeyboardVisible) {
-                Box(modifier = Modifier.fillMaxWidth().height(70.dp)
-                    .background(if (isDark) Color(0xFF000000) else Color(0xFFF1F5F9)),
-                    contentAlignment = Alignment.Center) {
-                    Box(modifier = Modifier
-                        .border(1.dp, if (isDark) Color(0xFF2D2D30) else Color(0xFFCBD5E1), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 24.dp, vertical = 8.dp)) {
-                        Text("ADVERTISEMENT", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 2.sp,
-                            color = if (isDark) Color(0xFF3F3F46) else Color(0xFF94A3B8))
-                    }
+                // ★ADオーバーレイ：Scaffoldの後に描画することで最上レイヤーになる
+                // 非ポップアップ時にSPEEDバー以下（Track・PITCH等）を視覚的に隠すバリア
+                // 編集モード・キーボード表示中は不要なので非表示
+                if (!isEditMode && !isKeyboardVisible) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(35.dp)
+                            .background(bgColor)
+                    )
                 }
             }
         }
@@ -1535,8 +1552,8 @@ class MainActivity : ComponentActivity() {
             } else {
                 LazyColumn(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
-                    // ★top=12dp：先頭カードのshadowがLazyColumnの上端でクリップされないよう余白確保
-                    contentPadding = PaddingValues(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 8.dp),
+                    // ★top=20dp：先頭カードのshadowがLazyColumnの上端でクリップされないよう余白確保
+                    contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     itemsIndexed(prompts) { index, prompt ->
@@ -1682,6 +1699,52 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             e.printStackTrace()
             ""
+        }
+    }
+
+    // 広告を事前ロードする（表示の直前ではなく、起動時・表示後に呼んで常に準備しておく）
+    private fun loadInterstitialAd() {
+        InterstitialAd.load(
+            this,
+            BuildConfig.ADMOB_INTERSTITIAL_ID,
+            AdRequest.Builder().build(),
+            object : InterstitialAdLoadCallback() {
+                override fun onAdLoaded(ad: InterstitialAd) {
+                    interstitialAd = ad
+                }
+                override fun onAdFailedToLoad(error: LoadAdError) {
+                    interstitialAd = null  // 失敗しても次回また試みる
+                }
+            }
+        )
+    }
+
+    // 再生終了時に呼ぶ：3回に1回広告を表示し、表示後に次回分を事前ロード
+    // runOnUiThread：TTS コールバックはバックグラウンドスレッドなので必ずメインスレッドに戻す
+    fun showInterstitialAdIfReady() {
+        adPlayCount++
+        if (adPlayCount < AD_INTERVAL) return
+        adPlayCount = 0
+
+        runOnUiThread {
+            val ad = interstitialAd
+            if (ad != null) {
+                ad.fullScreenContentCallback = object : FullScreenContentCallback() {
+                    override fun onAdDismissedFullScreenContent() {
+                        // 広告を閉じたら次回のために即ロード開始
+                        interstitialAd = null
+                        loadInterstitialAd()
+                    }
+                    override fun onAdFailedToShowFullScreenContent(error: AdError) {
+                        interstitialAd = null
+                        loadInterstitialAd()
+                    }
+                }
+                ad.show(this)
+            } else {
+                // 広告が準備できていなければロードだけして今回はスキップ
+                loadInterstitialAd()
+            }
         }
     }
 

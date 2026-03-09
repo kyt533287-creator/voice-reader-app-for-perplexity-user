@@ -1,7 +1,23 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// local.properties から AdMob ID を読み込む
+// local.properties は .gitignore 対象なので Git に上がらず安全
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(localPropertiesFile.inputStream())
+}
+
+// local.properties に本番IDがなければ Google 公式テスト用IDを使う
+val admobAppId = localProperties["ADMOB_APP_ID"] as String?
+    ?: "ca-app-pub-3940256099942544~3347511713"
+val admobInterstitialId = localProperties["ADMOB_INTERSTITIAL_ID"] as String?
+    ?: "ca-app-pub-3940256099942544/1033173712"
 
 android {
     namespace = "com.example.voicereader"
@@ -14,6 +30,11 @@ android {
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // AndroidManifest.xml の ${ADMOB_APP_ID} を置換する
+        manifestPlaceholders["ADMOB_APP_ID"] = admobAppId
+        // コード内で BuildConfig.ADMOB_INTERSTITIAL_ID として参照できる
+        buildConfigField("String", "ADMOB_INTERSTITIAL_ID", "\"$admobInterstitialId\"")
     }
 
     buildTypes {
@@ -33,6 +54,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true  // BuildConfig クラスを生成する（AdMob ID 参照に必要）
     }
 }
 
@@ -66,4 +88,7 @@ dependencies {
     implementation("com.tom-roush:pdfbox-android:2.0.27.0") {
         exclude(group = "org.bouncycastle")
     }
+
+    // AdMob（Google モバイル広告 SDK）
+    implementation("com.google.android.gms:play-services-ads:23.3.0")
 }

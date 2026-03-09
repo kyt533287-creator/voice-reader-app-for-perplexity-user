@@ -29,6 +29,11 @@
         android:theme="@style/Theme.VoiceReader">
         <!-- アプリのテーマ（見た目） -->
 
+        <!-- AdMob アプリID（build.gradle.kts の manifestPlaceholders から注入） -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="${ADMOB_APP_ID}" />
+
     <!-- ↓ メイン画面（ユーザーが最初に見る画面）の設定 -->
         <activity
             android:name=".MainActivity"
