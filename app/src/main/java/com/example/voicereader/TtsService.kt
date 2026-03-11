@@ -96,7 +96,7 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         // MediaSession を初期化（ロック画面コントロール・ヘッドセットボタン対応）
-        mediaSession = MediaSession(this, "VoiceReaderSession")
+        mediaSession = MediaSession(this, "BridgeTTSSession")
         mediaSession.setCallback(mediaSessionCallback)
         mediaSession.isActive = true
         updateMediaSessionState(false)
@@ -223,7 +223,7 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
             "Playback",
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "VoiceReader playback controls"
+            description = "BridgeTTS playback controls"
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
@@ -263,7 +263,7 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
 
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle("VoiceReader")
+            .setContentTitle("BridgeTTS")
             .setContentText(subtitle)
             .setContentIntent(openAppIntent)
             .setOngoing(isPlaying)       // 再生中は通知をスワイプで消せない

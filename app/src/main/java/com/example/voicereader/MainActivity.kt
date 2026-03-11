@@ -610,17 +610,6 @@ class MainActivity : ComponentActivity() {
                         Text("Leave without saving?", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = textPrimary)
                         Text("Your changes will be lost.", fontSize = 14.sp, color = textMuted)
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            // NO = 目立つグラデーションボタン（押し間違え防止）
-                            Box(
-                                modifier = Modifier.weight(1f)
-                                    .shadow(4.dp, RoundedCornerShape(12.dp))
-                                    .background(gradient, RoundedCornerShape(12.dp))
-                                    .clickable { showDialog = false }
-                                    .padding(vertical = 12.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text("NO", fontWeight = FontWeight.Bold, color = Color.White)
-                            }
                             // YES = 控えめなボタン
                             Box(
                                 modifier = Modifier.weight(1f)
@@ -631,6 +620,17 @@ class MainActivity : ComponentActivity() {
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text("YES", fontWeight = FontWeight.Bold, color = textMuted)
+                            }
+                            // NO = 目立つグラデーションボタン（押し間違え防止）
+                            Box(
+                                modifier = Modifier.weight(1f)
+                                    .shadow(4.dp, RoundedCornerShape(12.dp))
+                                    .background(gradient, RoundedCornerShape(12.dp))
+                                    .clickable { showDialog = false }
+                                    .padding(vertical = 12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("NO", fontWeight = FontWeight.Bold, color = Color.White)
                             }
                         }
                     }

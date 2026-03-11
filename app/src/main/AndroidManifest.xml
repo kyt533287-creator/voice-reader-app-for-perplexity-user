@@ -23,7 +23,7 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
-        android:label="VoiceReader"
+        android:label="BridgeTTS"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.VoiceReader">
@@ -40,7 +40,7 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
             android:exported="true"
-            android:label="VoiceReader"
+            android:label="BridgeTTS"
             android:theme="@style/Theme.VoiceReader">
 
     <intent-filter>
