@@ -6,7 +6,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.Binder
@@ -45,6 +49,43 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
     // 通知の ▶/⏸ ボタンを切り替えるための再生状態フラグ
     private var isCurrentlyPlaying = false
 
+    // ★オーディオフォーカス管理
+    private lateinit var audioManager: AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+    // 電話など一時的なフォーカス喪失前に再生中だったか記憶するフラグ
+    private var wasPlayingBeforeFocusLoss = false
+
+    // ★フォーカス変化リスナー：電話・他アプリの割り込みを検知する
+    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                // 完全喪失（Spotifyなどが長時間フォーカスを取得）→ 停止・再開しない
+                wasPlayingBeforeFocusLoss = false
+                stop()
+                listener?.onPaused()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // 一時的喪失（電話・ナビ案内など）→ 一時停止して位置を記憶
+                if (isCurrentlyPlaying) {
+                    wasPlayingBeforeFocusLoss = true
+                    tts.stop()
+                    isCurrentlyPlaying = false
+                    updateNotification(false)
+                    updateMediaSessionState(false)
+                    listener?.onPaused()
+                }
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                // フォーカス回復（電話終了など）→ 一時停止していた場合のみ再開
+                if (wasPlayingBeforeFocusLoss && sentences.isNotEmpty()) {
+                    wasPlayingBeforeFocusLoss = false
+                    speakCurrentSentence()
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         tts = TextToSpeech(this, this)
@@ -52,6 +93,7 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
         // 通知チャンネルを作成（Android 8.0+ 必須。何度呼んでも安全）
         createNotificationChannel()
         notificationManager = getSystemService(NotificationManager::class.java)
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         // MediaSession を初期化（ロック画面コントロール・ヘッドセットボタン対応）
         mediaSession = MediaSession(this, "VoiceReaderSession")
@@ -104,6 +146,10 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
                 }
 
                 override fun onDone(utteranceId: String?) {
+                    // ★外部から stop() が呼ばれていた場合はここで打ち切る
+                    // （フォーカス喪失 → stop() → onDone() の順で来ても次文に進まない）
+                    if (!isCurrentlyPlaying) return
+
                     // 1文読み終わったら次へ
                     currentIndex++
                     if (currentIndex < sentences.size) {
@@ -284,14 +330,38 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    // 文のリストを受け取って、指定位置から再生する（ロジック変更なし + 通知フック追加）
+    // ★オーディオフォーカスを要求する（再生開始前に必ず呼ぶ）
+    // 戻り値：true = フォーカス取得成功、false = 取得失敗（別アプリが占有中）
+    private fun requestAudioFocus(): Boolean {
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            .setOnAudioFocusChangeListener(audioFocusChangeListener)
+            .build()
+        audioFocusRequest = request
+        return audioManager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    // ★オーディオフォーカスを解放する（停止・終了時に呼ぶ）
+    private fun abandonAudioFocus() {
+        audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        audioFocusRequest = null
+    }
+
+    // 文のリストを受け取って、指定位置から再生する
     fun speakList(list: List<String>, startIndex: Int) {
+        // フォーカスを要求（取得できなければ再生しない）
+        if (!requestAudioFocus()) return
+
         // フォアグラウンドサービスを開始して通知を表示する
         isCurrentlyPlaying = true
         startForeground(NOTIFICATION_ID, buildNotification(true))
         updateMediaSessionState(true)
 
-        // 既存ロジック（変更なし）
         sentences = list
         currentIndex = startIndex.coerceIn(0, list.size - 1)
         speakCurrentSentence()
@@ -323,12 +393,13 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
-    // 外部から呼ばれる：停止（ロジック変更なし + 通知フック追加）
+    // 外部から呼ばれる：停止
     fun stop() {
         if (::tts.isInitialized) {
             tts.stop()
         }
-        // フォアグラウンドを解除して通知を削除する
+        wasPlayingBeforeFocusLoss = false  // 停止したので復帰不要
+        abandonAudioFocus()                // フォーカスを解放
         isCurrentlyPlaying = false
         updateMediaSessionState(false)
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -367,6 +438,8 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
             tts.stop()
             tts.shutdown()
         }
+        // オーディオフォーカスを解放（他のアプリが音声を再開できるよう）
+        abandonAudioFocus()
         // MediaSession を解放（リソースリーク防止）
         mediaSession.isActive = false
         mediaSession.release()
