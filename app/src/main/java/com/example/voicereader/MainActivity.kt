@@ -760,6 +760,9 @@ class MainActivity : ComponentActivity() {
         var speechRate by remember { mutableFloatStateOf(1.0f) }
         var pitch by remember { mutableFloatStateOf(1.0f) }
         var currentSentenceIndex by remember { mutableIntStateOf(0) }
+        // シークスライダー用：ドラッグ中は再生位置と切り離して動かすための変数
+        var seekSliderValue by remember { mutableFloatStateOf(0f) }
+        var isDraggingSeek by remember { mutableStateOf(false) }
         var isEditMode by remember { mutableStateOf(false) }
         // ★③ フォントサイズ：13(Small) / 16(Medium) / 20(Large)
         var fontSize by remember { mutableFloatStateOf(16f) }
@@ -907,16 +910,21 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // ★修正：読み上げ中の段落が画面の中央付近に来るようにスクロール
-        // animateScrollToItemは指定アイテムを「画面上端」に持ってくるので、
-        // 画面に表示されているアイテム数の半分だけ手前にずらすことで中央に寄せる
+        // 再生位置が変わったらスライダーを同期（ドラッグ中は無視）
+        LaunchedEffect(currentSentenceIndex) {
+            if (!isDraggingSeek && sentences.size > 1) {
+                seekSliderValue = currentSentenceIndex.toFloat() / (sentences.size - 1).toFloat()
+            }
+        }
+
         LaunchedEffect(currentSentenceIndex) {
             if (currentSentenceIndex >= 0 && currentSentenceIndex < sentences.size) {
                 // LazyColumnの描画完了を待ってからスクロール実行
                 kotlinx.coroutines.delay(100)
-                // 現在画面に見えているアイテム数を取得し、半分手前にスクロール
+                // 現在画面に見えているアイテム数を取得し、中央より1つ上に表示
+                // （ボトムシート展開時にハイライトが隠れないよう、やや上寄りにする）
                 val visibleCount = listState.layoutInfo.visibleItemsInfo.size
-                val targetIndex = maxOf(0, currentSentenceIndex - visibleCount / 2)
+                val targetIndex = maxOf(0, currentSentenceIndex - visibleCount / 2 + 2)
                 listState.animateScrollToItem(targetIndex)
             }
         }
@@ -1152,7 +1160,7 @@ class MainActivity : ComponentActivity() {
                     BottomSheetScaffold(
                         modifier             = Modifier.fillMaxSize(),
                         scaffoldState        = scaffoldState,
-                        sheetPeekHeight      = if (isLandscape) 125.dp else 205.dp,  // ★縦205dp（170+35=ADオーバーレイ分を加算。実質見える量は170dp相当）横125dp（Transportのみ）
+                        sheetPeekHeight      = if (isLandscape) 125.dp else 260.dp,  // ★縦260dp（224+35=ADオーバーレイ分を加算。実質見える量224dp：Transport+SPEED+Progress）横125dp（Transportのみ）
                         sheetContainerColor  = paperColor,
                         sheetShadowElevation = 16.dp,
                         containerColor       = bgColor,
@@ -1282,21 +1290,47 @@ class MainActivity : ComponentActivity() {
                                         fontSize = 13.sp, fontWeight = FontWeight.Bold, color = textPrimary,
                                         modifier = Modifier.width(36.dp), textAlign = TextAlign.End)
                                 }
-                                // Track 進捗（小さく薄く）
+                                // Track 進捗（ドラッグで位置移動できるスライダー）
                                 if (sentences.size > 1) {
-                                    val rp = (currentSentenceIndex.toFloat() / (sentences.size - 1).toFloat()).coerceIn(0f, 1f)
-                                    val ap by animateFloatAsState(rp, tween(300), label = "tp")
                                     Row(modifier = Modifier.fillMaxWidth()
-                                        .padding(start = 24.dp, end = 24.dp, top = 2.dp, bottom = 4.dp),
+                                        .padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically) {
-                                        Box(modifier = Modifier.weight(1f).height(3.dp)
-                                            .background(sliderBg.copy(alpha = 0.5f), RoundedCornerShape(50))) {
-                                            Box(modifier = Modifier.fillMaxWidth(ap).fillMaxHeight()
-                                                .background(textMuted.copy(alpha = if (isPlaying) 0.3f + rawPulse * 0.35f else 0.4f), RoundedCornerShape(50)))  // ★再生中にTrackバーもふわふわ
-                                        }
+                                        Slider(
+                                            value = seekSliderValue,
+                                            onValueChange = { v ->
+                                                isDraggingSeek = true
+                                                seekSliderValue = v
+                                            },
+                                            onValueChangeFinished = {
+                                                // 指を離したら、その位置のセンテンスにジャンプ
+                                                val targetIndex = (seekSliderValue * (sentences.size - 1)).toInt()
+                                                    .coerceIn(0, sentences.size - 1)
+                                                currentSentenceIndex = targetIndex
+                                                ttsService?.seekTo(targetIndex)
+                                                isDraggingSeek = false
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            // サムネイル（つまみ）：指で掴みやすい大きさ
+                                            thumb = {
+                                                Box(modifier = Modifier.size(22.dp)
+                                                    .shadow(3.dp, CircleShape)
+                                                    .background(Color.White, CircleShape)
+                                                    .border(2.dp, textMuted, CircleShape))
+                                            },
+                                            // トラック：再生済み部分をハイライト
+                                            track = {
+                                                Box(modifier = Modifier.fillMaxWidth().height(6.dp)
+                                                    .background(sliderBg.copy(alpha = 0.5f), RoundedCornerShape(50))) {
+                                                    Box(modifier = Modifier.fillMaxWidth(seekSliderValue).fillMaxHeight()
+                                                        .background(
+                                                            textMuted.copy(alpha = if (isPlaying) minOf(1f, (0.3f + rawPulse * 0.35f) * 1.5f) else 0.6f),
+                                                            RoundedCornerShape(50)))
+                                                }
+                                            }
+                                        )
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("${(ap * 100).toInt()}%", fontSize = 9.sp,
-                                            color = textMuted.copy(alpha = 0.6f), fontWeight = FontWeight.Bold)
+                                        Text("${(seekSliderValue * 100).toInt()}%", fontSize = 13.sp,
+                                            color = textMuted.copy(alpha = 0.9f), fontWeight = FontWeight.Bold)
                                     }
                                 }
                                 // ──── 展開時のみ表示 ────

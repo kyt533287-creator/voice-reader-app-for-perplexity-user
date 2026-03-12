@@ -405,6 +405,20 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
+    // 外部から呼ばれる：シーク（指定センテンスにジャンプ）
+    // 再生中なら即座にその位置から再生、停止中なら位置だけ移動
+    fun seekTo(index: Int) {
+        if (sentences.isEmpty()) return
+        currentIndex = index.coerceIn(0, sentences.size - 1)
+        if (isCurrentlyPlaying) {
+            tts.stop()
+            speakCurrentSentence()
+        } else {
+            // 停止中は位置の更新だけUIに通知
+            listener?.onProgress(currentIndex, sentences.size)
+        }
+    }
+
     // 外部から呼ばれる：速度設定（変更なし）
     fun setSpeechRate(rate: Float) {
         currentRate = rate
