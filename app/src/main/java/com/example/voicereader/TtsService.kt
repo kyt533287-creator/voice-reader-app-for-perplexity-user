@@ -142,7 +142,8 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
             tts.setPitch(currentPitch)
             tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
-                    // 何もしない
+                    // 実際に音声出力が始まった瞬間にUIへ通知（起動中スピナーを消すため）
+                    listener?.onStarted()
                 }
 
                 override fun onDone(utteranceId: String?) {
@@ -465,6 +466,8 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
         fun onProgress(current: Int, total: Int)
         fun onComplete()
         fun onError(message: String)
+        // 最初のセンテンスで実際に音声出力が始まった瞬間に呼ばれる（起動中スピナー終了用）
+        fun onStarted() {}
         // 通知の PAUSE ボタン押下時に呼ばれる
         // onComplete() と違い currentSentenceIndex をリセットしない
         fun onPaused() {}

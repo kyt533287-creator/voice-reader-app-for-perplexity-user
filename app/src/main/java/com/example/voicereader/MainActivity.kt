@@ -184,11 +184,18 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun AppNavigation() {
+        // context・sessionFile は mainText の初期化より先に宣言する必要がある
+        val context = LocalContext.current
+        // 前回セッションのテキストを保存するファイル（内部ストレージ：テキストが巨大になるためファイルを使用）
+        val sessionFile = remember { java.io.File(context.filesDir, "last_session.txt") }
+
         // 現在の画面管理
         var currentScreen by remember { mutableStateOf(Screen.Main) }
 
-        // メイン画面の状態
-        var mainText by remember { mutableStateOf("") }
+        // メイン画面の状態（前回セッションのテキストがあれば復元）
+        var mainText by remember {
+            mutableStateOf(if (sessionFile.exists()) sessionFile.readText() else "")
+        }
         var sentences by remember { mutableStateOf<List<String>>(emptyList()) }
 
         // 編集対象のプロンプトインデックス (-1は新規)
@@ -197,9 +204,10 @@ class MainActivity : ComponentActivity() {
         // ★辞書用の状態変数を追加（プロンプトリストの下）
         var editingDictionaryIndex by remember { mutableIntStateOf(-1) }
 
-        val context = LocalContext.current
         val prefs = remember { context.getSharedPreferences("prompts_prefs", Context.MODE_PRIVATE) }
-
+        val scope = rememberCoroutineScope()
+        // テキスト処理中フラグ（巨大ファイルの場合、処理に数秒かかるためUI側でローディング表示に使う）
+        var isTextProcessing by remember { mutableStateOf(false) }
 
         // データ読み込み関数
         fun loadPrompts(): MutableList<PromptItem> {
@@ -258,17 +266,39 @@ class MainActivity : ComponentActivity() {
         }
 
         fun updateMainText(newText: String) {
-            // プロンプトリストから文字列リストを作成
-            val promptContents = promptList.map { it.content }
+            // 重い処理をバックグラウンドスレッドで実行（巨大ファイルでもUIが固まらない）
+            scope.launch {
+                isTextProcessing = true
+                val (cleanedText, splitSentences) = withContext(Dispatchers.Default) {
+                    // ★処理順序が重要：プロンプト除去 → Perplexity整形 → 文分割
+                    val promptContents = promptList.map { it.content }
+                    val cleaned = TextProcessor.removePrompts(newText, promptContents)
+                    // ★表示用テキスト：辞書を適用しない（画面には元の単語をそのまま表示）
+                    val perplexityCleaned = TextProcessor.cleanPerplexityText(cleaned)
+                    // ★TTS用テキスト：辞書を適用（読み上げ時だけ単語を変換）
+                    val dictionaryApplied = TextProcessor.applyDictionary(perplexityCleaned, dictionaryList)
+                    val newSentences = TextProcessor.splitSentences(dictionaryApplied)
+                    Pair(perplexityCleaned, newSentences)
+                }
+                // バックグラウンド処理完了 → メインスレッドでUIを更新
+                mainText = cleanedText
+                sentences = splitSentences
+                isTextProcessing = false
+                // テキストをファイルに保存（次回起動時に復元する）
+                withContext(Dispatchers.IO) {
+                    sessionFile.writeText(cleanedText)
+                }
+                // 新しいテキストに切り替わったので、読み位置をリセット
+                context.getSharedPreferences("tts_prefs", Context.MODE_PRIVATE)
+                    .edit().putInt("lastSentenceIndex", 0).apply()
+            }
+        }
 
-            // ★処理順序が重要：プロンプト除去 → Perplexity整形 → 文分割
-            val cleaned = TextProcessor.removePrompts(newText, promptContents)
-            // ★表示用テキスト：辞書を適用しない（画面には元の単語をそのまま表示）
-            val perplexityCleaned = TextProcessor.cleanPerplexityText(cleaned)
-            mainText = perplexityCleaned
-            // ★TTS用テキスト：辞書を適用（読み上げ時だけ単語を変換）
-            val dictionaryApplied = TextProcessor.applyDictionary(perplexityCleaned, dictionaryList)
-            sentences = TextProcessor.splitSentences(dictionaryApplied)
+        // 起動時：保存されたテキストがあれば sentences を生成（読み位置復元のため）
+        LaunchedEffect(Unit) {
+            if (mainText.isNotEmpty()) {
+                updateMainText(mainText)
+            }
         }
 
         // ★画面の「深さ」を定義（進む方向 vs 戻る方向を判定するために使う）
@@ -308,7 +338,8 @@ class MainActivity : ComponentActivity() {
                         onTextChange = { mainText = it },
                         onNavigateToPrompts = { currentScreen = Screen.PromptList },
                         onNavigateToDictionary = { currentScreen = Screen.DictionaryList },
-                        onUpdateText = { updateMainText(it) }
+                        onUpdateText = { updateMainText(it) },
+                        isTextProcessing = isTextProcessing
                     )
                 }
                 Screen.PromptList -> {
@@ -754,11 +785,21 @@ class MainActivity : ComponentActivity() {
         onTextChange: (String) -> Unit,
         onNavigateToPrompts: () -> Unit,
         onNavigateToDictionary: () -> Unit,
-        onUpdateText: (String) -> Unit
+        onUpdateText: (String) -> Unit,
+        isTextProcessing: Boolean = false   // テキスト処理中フラグ（デフォルトfalse）
     ) {
         var isPlaying by remember { mutableStateOf(false) }
-        var speechRate by remember { mutableFloatStateOf(1.0f) }
-        var pitch by remember { mutableFloatStateOf(1.0f) }
+        // 再生ボタンタップ〜TTS実際に音が出るまでの間「起動中」スピナーを表示するフラグ
+        var isTtsStarting by remember { mutableStateOf(false) }
+
+        // ★スピード・ピッチを SharedPreferences から復元（前回の設定を引き継ぐ）
+        val context = LocalContext.current
+        val ttsPrefs = remember { context.getSharedPreferences("tts_prefs", Context.MODE_PRIVATE) }
+        var speechRate by remember { mutableFloatStateOf(ttsPrefs.getFloat("speechRate", 1.0f)) }
+        var pitch by remember { mutableFloatStateOf(ttsPrefs.getFloat("pitch", 1.0f)) }
+        // 前回セッションで保存された読み位置（sentences が読み込まれたら一度だけ復元）
+        val savedSessionIndex = remember { ttsPrefs.getInt("lastSentenceIndex", 0) }
+        var hasRestoredSession by remember { mutableStateOf(false) }
         var currentSentenceIndex by remember { mutableIntStateOf(0) }
         // シークスライダー用：ドラッグ中は再生位置と切り離して動かすための変数
         var seekSliderValue by remember { mutableFloatStateOf(0f) }
@@ -766,6 +807,8 @@ class MainActivity : ComponentActivity() {
         var isEditMode by remember { mutableStateOf(false) }
         // ★③ フォントサイズ：13(Small) / 16(Medium) / 20(Large)
         var fontSize by remember { mutableFloatStateOf(16f) }
+        // PDFなどのファイル読み込み中フラグ（IOスレッドでの抽出フェーズ）
+        var isLoadingFile by remember { mutableStateOf(false) }
 
         // ★編集中のテキストを保持する変数
         var editingText by remember { mutableStateOf(text) }
@@ -784,6 +827,14 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(text) {
             if (!isEditMode) {
                 editingText = text
+            }
+        }
+
+        // sentences が読み込まれたとき、前回の読み位置を一度だけ復元する
+        LaunchedEffect(sentences.size) {
+            if (!hasRestoredSession && sentences.isNotEmpty() && savedSessionIndex > 0) {
+                currentSentenceIndex = if (savedSessionIndex < sentences.size) savedSessionIndex else 0
+                hasRestoredSession = true
             }
         }
 
@@ -831,7 +882,6 @@ class MainActivity : ComponentActivity() {
         }
 
         val listState = rememberLazyListState()
-        val context = LocalContext.current
         val activity = context as? MainActivity
 
         // ★非対応ファイル形式ダイアログ
@@ -961,7 +1011,13 @@ class MainActivity : ComponentActivity() {
         val docPickerLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.OpenDocument()
         ) { uri: Uri? ->
-            uri?.let {
+            if (uri == null) {
+                // ファイルが選択されなかった（ピッカーがキャンセルされた or 認識失敗）
+                Toast.makeText(context, "File not selected. Please try again.", Toast.LENGTH_SHORT).show()
+                return@rememberLauncherForActivityResult
+            }
+            uri.let {
+                isLoadingFile = true  // ファイル読み込み開始
                 scope.launch(Dispatchers.IO) {
                     // MIMEタイプを確認してファイル形式を自動判定
                     val mimeType = context.contentResolver.getType(it) ?: ""
@@ -981,8 +1037,12 @@ class MainActivity : ComponentActivity() {
                         else -> ""
                     }
                     withContext(Dispatchers.Main) {
+                        isLoadingFile = false  // ファイル読み込み完了
                         if (text.isNotEmpty()) {
                             onUpdateText(text)
+                        } else if (mimeType.contains("pdf")) {
+                            // PDF読み込み失敗（画像だけのPDF・パスワード付き等）
+                            Toast.makeText(context, "Could not read PDF. It may be image-only or password-protected.", Toast.LENGTH_LONG).show()
                         } else if (mimeType.contains("google-apps.document")) {
                             // ★改善：content://URIは他アプリへの受け渡しが不安定なため
                             // Google DriveのファイルIDを取り出してウェブURLで開く方式に変更
@@ -1033,21 +1093,31 @@ class MainActivity : ComponentActivity() {
                 override fun onProgress(current: Int, total: Int) {
                     currentSentenceIndex = current
                     isPlaying = true  // 通知 PLAY ボタンから再開したときも UI を同期
+                    // 読み位置を保存（次回起動時に復元するため）
+                    ttsPrefs.edit().putInt("lastSentenceIndex", current).apply()
+                }
+                // TTSが実際に音を出し始めた瞬間（再生ボタンタップから数秒後）
+                override fun onStarted() {
+                    isTtsStarting = false  // 起動中スピナーを消す
                 }
                 override fun onComplete() {
                     isPlaying = false
-                    // ★修正：読了後も先頭をグレーハイライトで示す（-1だとハイライトが消えてしまうため0に変更）
+                    isTtsStarting = false
                     currentSentenceIndex = 0
+                    // 読了したので位置を先頭にリセット（次回起動は最初から）
+                    ttsPrefs.edit().putInt("lastSentenceIndex", 0).apply()
                     // 再生終了のたびにカウントし、3回に1回インタースティシャル広告を表示
                     activity?.showInterstitialAdIfReady()
                 }
                 override fun onError(msg: String) {
                     isPlaying = false
+                    isTtsStarting = false
                 }
                 // ★追加：通知の PAUSE ボタンが押されたとき
                 // onComplete() と違い currentSentenceIndex はリセットしない（位置を覚えたまま止まる）
                 override fun onPaused() {
                     isPlaying = false
+                    isTtsStarting = false
                 }
             })
         }
@@ -1232,23 +1302,34 @@ class MainActivity : ComponentActivity() {
                                         .background(playGradient, CircleShape)
                                         .border(3.dp, paperColor, CircleShape)
                                         .clickable(interactionSource = playSrc, indication = null) {
+                                            if (isTextProcessing) return@clickable // 処理中はタップ無効
                                             if (isPlaying) {
-                                                ttsService?.stop(); isPlaying = false
+                                                ttsService?.stop(); isPlaying = false; isTtsStarting = false
                                             } else {
                                                 if (sentences.isNotEmpty()) {
                                                     val s = if (currentSentenceIndex in sentences.indices) currentSentenceIndex else 0
                                                     ttsService?.setSpeechRate(speechRate); ttsService?.setPitch(pitch)
                                                     setupTtsListener(); ttsService?.speakList(sentences, s)
                                                     currentSentenceIndex = s; isPlaying = true
+                                                    isTtsStarting = true  // TTS起動中スピナー表示開始
                                                 }
                                             }
                                         },
                                         contentAlignment = Alignment.Center) {
-                                        Icon(if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
-                                            if (isPlaying) "Stop" else "Play",
-                                            modifier = Modifier.size(40.dp)
-                                                .then(if (!isPlaying) Modifier.offset(x = 2.dp) else Modifier),
-                                            tint = Color.White)
+                                        // テキスト処理中 or TTS起動中はスピナーを表示、それ以外は再生/停止アイコン
+                                        if (isTextProcessing || isTtsStarting) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(36.dp),
+                                                color = Color.White,
+                                                strokeWidth = 3.dp
+                                            )
+                                        } else {
+                                            Icon(if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                                if (isPlaying) "Stop" else "Play",
+                                                modifier = Modifier.size(40.dp)
+                                                    .then(if (!isPlaying) Modifier.offset(x = 2.dp) else Modifier),
+                                                tint = Color.White)
+                                        }
                                     }
                                     Spacer(modifier = Modifier.width(24.dp))
                                     Box(modifier = Modifier.size(56.dp)
@@ -1274,7 +1355,14 @@ class MainActivity : ComponentActivity() {
                                     Text("SPEED", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold,
                                         letterSpacing = 1.5.sp, color = textMuted, modifier = Modifier.width(48.dp))
                                     Slider(value = speechRate,
-                                        onValueChange = { speechRate = it; ttsService?.setSpeechRate(it) },
+                                        onValueChange = { speechRate = it },  // ドラッグ中は数値表示だけ更新
+                                        onValueChangeFinished = {
+                                            // 指を離した瞬間：新スピードを反映し現在センテンスを先頭から読み直す
+                                            ttsService?.setSpeechRate(speechRate)
+                                            if (isPlaying) ttsService?.seekTo(currentSentenceIndex)
+                                            // 設定を保存（次回起動時に復元）
+                                            ttsPrefs.edit().putFloat("speechRate", speechRate).apply()
+                                        },
                                         valueRange = 0.5f..3.0f, modifier = Modifier.weight(1f),
                                         thumb = { Box(modifier = Modifier.size(24.dp).shadow(4.dp, CircleShape)
                                             .background(Color.White, CircleShape).border(2.dp, primaryColor, CircleShape)) },
@@ -1290,8 +1378,18 @@ class MainActivity : ComponentActivity() {
                                         fontSize = 13.sp, fontWeight = FontWeight.Bold, color = textPrimary,
                                         modifier = Modifier.width(36.dp), textAlign = TextAlign.End)
                                 }
-                                // Track 進捗（ドラッグで位置移動できるスライダー）
+                                // Track 進捗（ドラッグで位置移動できるスライダー）＋経過/全体時間表示
                                 if (sentences.size > 1) {
+                                    // 時間計算（スライダー右端に表示）
+                                    val baseCharsPerSec = 5.0f
+                                    val effectiveRate = (baseCharsPerSec * speechRate).coerceAtLeast(0.1f)
+                                    val totalSecs = (sentences.sumOf { it.length } / effectiveRate).toInt()
+                                    val elapsedSecs = (sentences.take(currentSentenceIndex).sumOf { it.length } / effectiveRate).toInt()
+                                    // 60分未満: "53:42"  /  60分以上: "1:32:54"
+                                    fun Int.toMmSs() = if (this < 3600)
+                                        "%d:%02d".format(this / 60, this % 60)
+                                    else
+                                        "%d:%02d:%02d".format(this / 3600, (this % 3600) / 60, this % 60)
                                     Row(modifier = Modifier.fillMaxWidth()
                                         .padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically) {
@@ -1329,8 +1427,9 @@ class MainActivity : ComponentActivity() {
                                             }
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        Text("${(seekSliderValue * 100).toInt()}%", fontSize = 13.sp,
-                                            color = textMuted.copy(alpha = 0.9f), fontWeight = FontWeight.Bold)
+                                        // 経過時間 / 全体時間をスライダー右端に表示（同一Row内で視覚的に一体化）
+                                        Text("(${elapsedSecs.toMmSs()} / ${totalSecs.toMmSs()})",
+                                            fontSize = 11.sp, color = textMuted.copy(alpha = 0.9f))
                                     }
                                 }
                                 // ──── 展開時のみ表示 ────
@@ -1341,7 +1440,12 @@ class MainActivity : ComponentActivity() {
                                     Text("PITCH", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold,
                                         letterSpacing = 1.5.sp, color = textMuted, modifier = Modifier.width(48.dp))
                                     Slider(value = pitch,
-                                        onValueChange = { pitch = it; ttsService?.setPitch(it) },
+                                        onValueChange = { pitch = it },  // ドラッグ中は数値表示だけ更新
+                                        onValueChangeFinished = {
+                                            // 指を離した瞬間：新ピッチを反映＋設定を保存
+                                            ttsService?.setPitch(pitch)
+                                            ttsPrefs.edit().putFloat("pitch", pitch).apply()
+                                        },
                                         valueRange = 0.5f..2.0f, modifier = Modifier.weight(1f),
                                         thumb = { Box(modifier = Modifier.size(24.dp).shadow(4.dp, CircleShape)
                                             .background(Color.White, CircleShape).border(2.dp, primaryColor, CircleShape)) },
@@ -1427,7 +1531,19 @@ class MainActivity : ComponentActivity() {
                         }
                     ) { innerPadding ->
                         Box(modifier = Modifier.fillMaxSize().padding(innerPadding).padding(horizontal = 16.dp)) {
-                            if (text.isEmpty()) {
+                            // ファイル読み込み中オーバーレイ
+                            if (isLoadingFile || isTextProcessing) {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                        CircularProgressIndicator(color = primaryColor)
+                                        Text(
+                                            if (isLoadingFile) "Reading file..." else "Processing text...",
+                                            color = textMuted, fontSize = 14.sp
+                                        )
+                                    }
+                                }
+                            } else if (text.isEmpty()) {
                                 Text("Copy a prompt with the Prompts button,\nthen paste the Perplexity result here.",
                                     modifier = Modifier.padding(16.dp), color = textMuted,
                                     fontSize = fontSize.sp, lineHeight = (fontSize * 1.6f).sp)

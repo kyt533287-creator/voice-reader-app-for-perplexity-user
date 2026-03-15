@@ -53,6 +53,35 @@ object TextProcessor {
 
     // 文分割
     fun splitSentences(text: String): List<String> {
-        return text.split(Regex("[。！?\\n]")).filter { it.isNotBlank() }
+        // Android TTS の上限は約4000文字。
+        // 300文字で区切るとスピード変更が最大12秒以内に反映される（1000文字だと最大40秒）
+        val MAX_CHARS = 300
+
+        return text
+            // 句点・感嘆符・疑問符（全角・半角両対応）・改行で分割
+            .split(Regex("[。！!?？\\n]"))
+            .filter { it.isNotBlank() }
+            .flatMap { sentence ->
+                if (sentence.length <= MAX_CHARS) {
+                    // 上限以下はそのまま
+                    listOf(sentence)
+                } else {
+                    // 上限超え：スペース・読点を探して自然な位置で分割（TTS停止防止）
+                    val chunks = mutableListOf<String>()
+                    var remaining = sentence
+                    while (remaining.length > MAX_CHARS) {
+                        // 1000文字以内で最後のスペースか読点を探す
+                        val cutPoint = remaining
+                            .substring(0, MAX_CHARS)
+                            .lastIndexOfAny(charArrayOf(' ', '、', ','))
+                            .takeIf { it > MAX_CHARS / 2 } // あまりに前すぎたら無視
+                            ?: MAX_CHARS                   // 見つからなければ強制カット
+                        chunks.add(remaining.substring(0, cutPoint).trim())
+                        remaining = remaining.substring(cutPoint).trim()
+                    }
+                    if (remaining.isNotBlank()) chunks.add(remaining)
+                    chunks
+                }
+            }
     }
 }
