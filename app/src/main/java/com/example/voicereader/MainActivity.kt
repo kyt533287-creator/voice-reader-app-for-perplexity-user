@@ -231,14 +231,13 @@ class MainActivity : ComponentActivity() {
         var isTextProcessing by remember { mutableStateOf(false) }
 
         // データ読み込み関数
-        // "prompts_initialized" フラグが false かつ count=0 → デフォルトプロンプトを登録
-        // 既存ユーザー（count>0）や一度でも初期化済みの場合は通常ロードにフォールスルー
+        // count=0 のとき無条件でデフォルトプロンプトを登録する（初回起動・既存ユーザー両対応）
+        // ※ユーザーが意図的に全プロンプト削除した場合もデフォルトが復元される仕様（初心者向け）
         fun loadPrompts(): MutableList<PromptItem> {
-            val isInitialized = prefs.getBoolean("prompts_initialized", false)
             val count = prefs.getInt("prompt_count", 0)
 
-            if (!isInitialized && count == 0) {
-                // 初回起動 or デフォルト追加前にアプリを使い始めたユーザー → デフォルトを登録
+            if (count == 0) {
+                // プロンプトが0件 → デフォルトを登録
                 val jpContent =
                     "以下の文章を、理解力のある高校生を対象に解説してください。\n\n" +
                     "① 背景・歴史的経緯を補足し、内容を元の約3倍に拡充してください。\n" +
@@ -268,7 +267,6 @@ class MainActivity : ComponentActivity() {
                     PromptItem("Structured Summary (EN)", enContent),
                 )
                 val editor = prefs.edit()
-                editor.putBoolean("prompts_initialized", true)
                 editor.putInt("prompt_count", defaults.size)
                 defaults.forEachIndexed { i, item ->
                     editor.putString("prompt_title_$i", item.title)
@@ -278,11 +276,7 @@ class MainActivity : ComponentActivity() {
                 return defaults.toMutableList()
             }
 
-            // 初期化済み or すでにプロンプトがある → 通常ロード
-            if (!isInitialized) {
-                // プロンプトがある既存ユーザー：フラグだけ立てて通常ロード
-                prefs.edit().putBoolean("prompts_initialized", true).apply()
-            }
+            // count > 0 → 通常ロード
             val list = mutableListOf<PromptItem>()
             for (i in 0 until count) {
                 val title = prefs.getString("prompt_title_$i", "無題") ?: "無題"
