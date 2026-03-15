@@ -1,6 +1,56 @@
 package com.example.voicereader
 
+import java.util.Locale
+
 object TextProcessor {
+
+    // ★5言語対応：テキストから使用言語を推定する
+    // 優先順：① ひらがな/カタカナ → JA  ② CJK文字のみ → ZH
+    //         ③ 独仏特殊文字 → DE/FR  ④ ストップワード多数決 → EN/DE/FR
+    //         ⑤ すべて曖昧 → fallback（デフォルトはLocale.US）
+    fun detectLanguage(text: String, fallback: Locale = Locale.US): Locale {
+        // ① ひらがな・カタカナがあれば日本語（ほぼ確実）
+        val hasHiragana = text.any { it in '\u3040'..'\u309F' || it in '\u30A0'..'\u30FF' }
+        if (hasHiragana) return Locale.JAPAN
+
+        // ② CJK漢字があり、かつひらがなゼロ → 中国語
+        val hasCjk = text.any { it in '\u4E00'..'\u9FFF' || it in '\u3400'..'\u4DBF' }
+        if (hasCjk) return Locale.CHINA
+
+        // ③ ドイツ語特有文字（ウムラウト・エスツェット）
+        val hasGerman = text.any { it in "äöüßÄÖÜ" }
+        // ④ フランス語特有文字（アクサン・セディユ等）またはアポストロフィパターン
+        val hasFrench = text.any { it in "àâçèéêëîïôùûœæÀÂÇÈÉÊËÎÏÔÙÛŒÆ" } ||
+                        Regex("\\b[ld]'", RegexOption.IGNORE_CASE).containsMatchIn(text)
+
+        if (hasGerman && !hasFrench) return Locale.GERMANY
+        if (hasFrench && !hasGerman) return Locale.FRANCE
+
+        // ⑤ ストップワード多数決（EN/DE/FR それぞれのよく使う単語を点数化）
+        val lower = text.lowercase()
+        var scoreEn = 0; var scoreDe = 0; var scoreFr = 0
+        listOf("the","is","are","and","that","this","with","for","not","from","have").forEach {
+            if (Regex("\\b$it\\b").containsMatchIn(lower)) scoreEn++
+        }
+        listOf("der","die","das","und","ist","nicht","mit","für","von","ein","eine","wird").forEach {
+            if (Regex("\\b$it\\b").containsMatchIn(lower)) scoreDe++
+        }
+        listOf("le","la","les","est","une","des","avec","pour","dans","sur","qui","que").forEach {
+            if (Regex("\\b$it\\b").containsMatchIn(lower)) scoreFr++
+        }
+
+        val maxScore = maxOf(scoreEn, scoreDe, scoreFr)
+        if (maxScore > 0) {
+            return when {
+                scoreEn >= scoreDe && scoreEn >= scoreFr -> Locale.US
+                scoreDe >= scoreFr -> Locale.GERMANY
+                else -> Locale.FRANCE
+            }
+        }
+
+        // ⑥ 何も判定できなければ fallback にフォールバック
+        return fallback
+    }
     // PDF専用の改行処理
     fun cleanPdfText(text: String): String {
         // 句読点の後の改行は保持、それ以外の改行は削除
@@ -39,7 +89,14 @@ object TextProcessor {
 
         // 有効な辞書エントリだけ処理
         dictionary.filter { it.isEnabled }.forEach { entry ->
-            if (processedText.contains(entry.original, ignoreCase = true)) {
+            if (entry.original.endsWith("\$\$\$")) {
+                // ★ワイルドカード "$$$" ：末尾の "$$$" が「空白以外の任意の文字列（0文字以上）」にマッチ
+                // 例: "https://$$$" → https://www.example.com/path?q=1 を丸ごとマッチして削除
+                val prefix = Regex.escape(entry.original.dropLast(3))
+                val pattern = Regex("$prefix\\S*", RegexOption.IGNORE_CASE)
+                processedText = pattern.replace(processedText, entry.replacement)
+            } else if (processedText.contains(entry.original, ignoreCase = true)) {
+                // 通常の文字列置換（従来通り）
                 processedText = processedText.replace(
                     entry.original,
                     entry.replacement,

@@ -44,6 +44,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
@@ -70,7 +72,6 @@ import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import java.util.Locale
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.filled.Assistant
@@ -182,6 +183,26 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // 言語コード文字列 → Locale 変換ヘルパー
+    fun ttsLangToLocale(lang: String): java.util.Locale = when (lang) {
+        "JA" -> java.util.Locale.JAPAN
+        "EN" -> java.util.Locale.US
+        "DE" -> java.util.Locale.GERMANY
+        "FR" -> java.util.Locale.FRANCE
+        "ZH" -> java.util.Locale.CHINA
+        else -> java.util.Locale.US
+    }
+
+    // Locale → 言語コード文字列 変換ヘルパー（TextProcessor.detectLanguage の戻り値をUIに変換）
+    fun localeToTtsLang(locale: java.util.Locale): String = when (locale) {
+        java.util.Locale.JAPAN  -> "JA"
+        java.util.Locale.US     -> "EN"
+        java.util.Locale.GERMANY -> "DE"
+        java.util.Locale.FRANCE -> "FR"
+        java.util.Locale.CHINA  -> "ZH"
+        else                    -> "EN"
+    }
+
     @Composable
     fun AppNavigation() {
         // context・sessionFile は mainText の初期化より先に宣言する必要がある
@@ -210,9 +231,59 @@ class MainActivity : ComponentActivity() {
         var isTextProcessing by remember { mutableStateOf(false) }
 
         // データ読み込み関数
+        // "prompts_initialized" フラグが false かつ count=0 → デフォルトプロンプトを登録
+        // 既存ユーザー（count>0）や一度でも初期化済みの場合は通常ロードにフォールスルー
         fun loadPrompts(): MutableList<PromptItem> {
-            val list = mutableListOf<PromptItem>()
+            val isInitialized = prefs.getBoolean("prompts_initialized", false)
             val count = prefs.getInt("prompt_count", 0)
+
+            if (!isInitialized && count == 0) {
+                // 初回起動 or デフォルト追加前にアプリを使い始めたユーザー → デフォルトを登録
+                val jpContent =
+                    "以下の文章を、理解力のある高校生を対象に解説してください。\n\n" +
+                    "① 背景・歴史的経緯を補足し、内容を元の約3倍に拡充してください。\n" +
+                    "② 過去の失敗事例や試行錯誤があれば触れてください。\n" +
+                    "③ 批判的・懐疑的な視点も提示し、リスクや限界・争点にも言及してください。\n" +
+                    "④ 専門用語は【用語】として明示し、その場でわかりやすく解説してください。\n" +
+                    "⑤ 断言できない点は「かもしれません」など慎重な表現を使い、率直に表明してください。\n" +
+                    "⑥ 一方的な説明ではなく、AIと人間が一緒に理解に挑戦している雰囲気で書いてください。\n\n" +
+                    "形式：導入→背景→批判的視点→基礎知識→まとめ の流れで最低7段落。" +
+                    "ところどころに問いかけを入れ、読み手が考えられるようにしてください。"
+
+                val enContent =
+                    "Please read the following text and provide a structured summary at roughly half the original length.\n\n" +
+                    "Format:\n" +
+                    "1. Overview: 2 to 3 sentences on the core message\n" +
+                    "2. Key Points: up to 5 of the most important facts\n" +
+                    "3. Background: brief historical or contextual information\n" +
+                    "4. Critical Perspective: limitations, risks, or counterarguments\n" +
+                    "5. Glossary: define technical terms as Term: definition\n\n" +
+                    "Guidelines:\n" +
+                    "- Write in clear, simple English for a general audience\n" +
+                    "- Avoid symbols like asterisks and hashtags; write in plain sentences\n" +
+                    "- If any information is unclear or uncertain, say so explicitly"
+
+                val defaults = listOf(
+                    PromptItem("深掘り解説（JA）", jpContent),
+                    PromptItem("Structured Summary (EN)", enContent),
+                )
+                val editor = prefs.edit()
+                editor.putBoolean("prompts_initialized", true)
+                editor.putInt("prompt_count", defaults.size)
+                defaults.forEachIndexed { i, item ->
+                    editor.putString("prompt_title_$i", item.title)
+                    editor.putString("prompt_content_$i", item.content)
+                }
+                editor.apply()
+                return defaults.toMutableList()
+            }
+
+            // 初期化済み or すでにプロンプトがある → 通常ロード
+            if (!isInitialized) {
+                // プロンプトがある既存ユーザー：フラグだけ立てて通常ロード
+                prefs.edit().putBoolean("prompts_initialized", true).apply()
+            }
+            val list = mutableListOf<PromptItem>()
             for (i in 0 until count) {
                 val title = prefs.getString("prompt_title_$i", "無題") ?: "無題"
                 val content = prefs.getString("prompt_content_$i", "") ?: ""
@@ -221,10 +292,40 @@ class MainActivity : ComponentActivity() {
             return list
         }
 
-        // ★辞書読み込み関数を追加
+        // ★辞書読み込み関数
+        // dictionary_count が -1（未設定）のときは初回起動と判断し、デフォルトエントリーを登録する
         fun loadDictionary(): MutableList<DictionaryEntry> {
+            val count = prefs.getInt("dictionary_count", -1)
+
+            // 初回起動（一度も辞書を保存したことがない）→ デフォルトエントリーを登録
+            if (count == -1) {
+                val defaults = listOf(
+                    // AIがよく出力するマークダウン記号（TTS で読み上げると雑音になるため削除）
+                    // ★スペース付き "# " にすることで "#hashtag" や URL の # への誤ヒットを防ぐ
+                    DictionaryEntry("### ", "", true),      // H3見出し
+                    DictionaryEntry("## ",  "", true),      // H2見出し
+                    DictionaryEntry("# ",   "", true),      // H1見出し
+                    DictionaryEntry("***",  "", true),      // 太字+斜体（** は cleanPerplexityText が処理）
+                    DictionaryEntry("---",  "", true),      // 水平線（区切り線）
+                    DictionaryEntry("> ",   "", true),      // 引用ブロック
+                    // URL削除サンプル：$$$ワイルドカード（OFF状態：必要な人だけONにする）
+                    // "https://$$$" は "https://www.example.com/path?q=1" を丸ごと削除する
+                    // ★Paste/ファイル読込時はcleanPerplexityTextが自動でURL削除するためOFF推奨
+                    DictionaryEntry("https://\$\$\$", "", false),  // HTTPS URL を丸ごと削除
+                    DictionaryEntry("http://\$\$\$",  "", false),  // HTTP  URL を丸ごと削除
+                )
+                val editor = prefs.edit()
+                editor.putInt("dictionary_count", defaults.size)
+                defaults.forEachIndexed { i, entry ->
+                    editor.putString("dict_original_$i", entry.original)
+                    editor.putString("dict_replacement_$i", entry.replacement)
+                    editor.putBoolean("dict_enabled_$i", entry.isEnabled)
+                }
+                editor.apply()
+                return defaults.toMutableList()
+            }
+
             val list = mutableListOf<DictionaryEntry>()
-            val count = prefs.getInt("dictionary_count", 0)
             for (i in 0 until count) {
                 val original = prefs.getString("dict_original_$i", "") ?: ""
                 val replacement = prefs.getString("dict_replacement_$i", "") ?: ""
@@ -265,16 +366,21 @@ class MainActivity : ComponentActivity() {
             editor.apply()
         }
 
-        fun updateMainText(newText: String) {
+        // skipClean=true のとき Perplexity整形をスキップする（編集保存時に使う）
+        // Perplexity整形は「連続空白・改行を1つに潰す」処理を含むため、
+        // ユーザーが手動で入れた改行が消えてしまうのを防ぐ
+        fun updateMainText(newText: String, skipClean: Boolean = false) {
             // 重い処理をバックグラウンドスレッドで実行（巨大ファイルでもUIが固まらない）
             scope.launch {
                 isTextProcessing = true
                 val (cleanedText, splitSentences) = withContext(Dispatchers.Default) {
-                    // ★処理順序が重要：プロンプト除去 → Perplexity整形 → 文分割
+                    // ★処理順序が重要：プロンプト除去 → Perplexity整形（任意）→ 文分割
                     val promptContents = promptList.map { it.content }
                     val cleaned = TextProcessor.removePrompts(newText, promptContents)
-                    // ★表示用テキスト：辞書を適用しない（画面には元の単語をそのまま表示）
-                    val perplexityCleaned = TextProcessor.cleanPerplexityText(cleaned)
+                    // ★編集保存時（skipClean=true）はPerplexity整形をスキップ
+                    // 　 ペースト・ファイル読込時は整形を適用（引用番号・URL・連続空白を除去）
+                    val perplexityCleaned = if (skipClean) cleaned
+                                           else TextProcessor.cleanPerplexityText(cleaned)
                     // ★TTS用テキスト：辞書を適用（読み上げ時だけ単語を変換）
                     val dictionaryApplied = TextProcessor.applyDictionary(perplexityCleaned, dictionaryList)
                     val newSentences = TextProcessor.splitSentences(dictionaryApplied)
@@ -338,7 +444,7 @@ class MainActivity : ComponentActivity() {
                         onTextChange = { mainText = it },
                         onNavigateToPrompts = { currentScreen = Screen.PromptList },
                         onNavigateToDictionary = { currentScreen = Screen.DictionaryList },
-                        onUpdateText = { updateMainText(it) },
+                        onUpdateText = { text, skipClean -> updateMainText(text, skipClean) },
                         isTextProcessing = isTextProcessing
                     )
                 }
@@ -641,27 +747,21 @@ class MainActivity : ComponentActivity() {
                         Text("Leave without saving?", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = textPrimary)
                         Text("Your changes will be lost.", fontSize = 14.sp, color = textMuted)
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            // YES = 控えめなボタン
-                            Box(
-                                modifier = Modifier.weight(1f)
-                                    .shadow(4.dp, RoundedCornerShape(12.dp))
-                                    .background(textMuted.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                                    .clickable { showDialog = false; onCancel() }
-                                    .padding(vertical = 12.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text("YES", fontWeight = FontWeight.Bold, color = textMuted)
+                            // YES（控えめ）
+                            Box(modifier = Modifier.weight(1f).height(44.dp)
+                                .shadow(2.dp, RoundedCornerShape(12.dp))
+                                .background(paperColor, RoundedCornerShape(12.dp))
+                                .clickable { showDialog = false; onCancel() },
+                                contentAlignment = Alignment.Center) {
+                                Text("YES", fontWeight = FontWeight.Bold, color = textMuted, fontSize = 14.sp)
                             }
-                            // NO = 目立つグラデーションボタン（押し間違え防止）
-                            Box(
-                                modifier = Modifier.weight(1f)
-                                    .shadow(4.dp, RoundedCornerShape(12.dp))
-                                    .background(gradient, RoundedCornerShape(12.dp))
-                                    .clickable { showDialog = false }
-                                    .padding(vertical = 12.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text("NO", fontWeight = FontWeight.Bold, color = Color.White)
+                            // NO（目立つ：グラデーション）
+                            Box(modifier = Modifier.weight(1f).height(44.dp)
+                                .shadow(4.dp, RoundedCornerShape(12.dp))
+                                .background(gradient, RoundedCornerShape(12.dp))
+                                .clickable { showDialog = false },
+                                contentAlignment = Alignment.Center) {
+                                Text("NO", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
                             }
                         }
                     }
@@ -713,7 +813,12 @@ class MainActivity : ComponentActivity() {
 
             // ★キーボード回避付き入力フィールド群
             Column(
-                modifier = Modifier.fillMaxSize().padding(20.dp).imePadding(),
+                modifier = Modifier
+                    .weight(1f)             // 残り高さを占有（ヘッダーと合わせてfillMaxSizeと同等）
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())  // ヘルプカードがはみ出ても縦スクロールで見られる
+                    .padding(20.dp)
+                    .imePadding(),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 // 置換元フィールド
@@ -772,6 +877,52 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+
+                // ★ヘルプカード：置換ルールの書き方を常時表示
+                Box(
+                    modifier = Modifier.fillMaxWidth()
+                        .background(primaryColor.copy(alpha = 0.07f), RoundedCornerShape(16.dp))
+                        .padding(16.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("How it works", fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = primaryColor)
+                        Text(
+                            "• Replacement blank  →  word is skipped (deleted from reading)\n" +
+                            "• Enter text  →  read as that text instead",
+                            fontSize = 12.sp, color = textMuted, lineHeight = 18.sp
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Examples", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = textMuted)
+                        // 例一覧（置換元 → 置換先 説明）
+                        listOf(
+                            Triple("# ",         "(blank)",        "removes heading markers"),
+                            Triple("## ",        "(blank)",        "removes subheading markers"),
+                            Triple("---",        "(blank)",        "removes divider lines"),
+                            Triple("URL",        "ユーアールエル",  "reads abbreviations aloud"),
+                            Triple("https://\$\$\$", "(blank)",    "removes entire URLs"),
+                        ).forEach { (orig, repl, desc) ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("\"$orig\"", fontSize = 11.sp, color = textPrimary, fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.widthIn(min = 72.dp))
+                                Text("→", fontSize = 11.sp, color = textMuted,
+                                    modifier = Modifier.padding(horizontal = 4.dp))
+                                Text("\"$repl\"", fontSize = 11.sp, color = primaryColor, fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f))
+                                Text(desc, fontSize = 10.sp, color = textMuted)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        // $$$ワイルドカードの説明
+                        Text(
+                            "★ \$\$\$ wildcard: add \$\$\$ at the end to match\n" +
+                            "  everything until the next space.\n" +
+                            "  e.g. \"https://\$\$\$\" removes the full URL.\n\n" +
+                            "Tip: Paste or File open already removes all URLs\n" +
+                            "  automatically — no entry needed for those.",
+                            fontSize = 11.sp, color = textMuted.copy(alpha = 0.85f), lineHeight = 16.sp
+                        )
+                    }
+                }
             }
         }
     }
@@ -785,7 +936,7 @@ class MainActivity : ComponentActivity() {
         onTextChange: (String) -> Unit,
         onNavigateToPrompts: () -> Unit,
         onNavigateToDictionary: () -> Unit,
-        onUpdateText: (String) -> Unit,
+        onUpdateText: (String, Boolean) -> Unit,
         isTextProcessing: Boolean = false   // テキスト処理中フラグ（デフォルトfalse）
     ) {
         var isPlaying by remember { mutableStateOf(false) }
@@ -797,6 +948,9 @@ class MainActivity : ComponentActivity() {
         val ttsPrefs = remember { context.getSharedPreferences("tts_prefs", Context.MODE_PRIVATE) }
         var speechRate by remember { mutableFloatStateOf(ttsPrefs.getFloat("speechRate", 1.0f)) }
         var pitch by remember { mutableFloatStateOf(ttsPrefs.getFloat("pitch", 1.0f)) }
+        // 言語設定：テキスト変更時に全体を自動判定し初期値を決める。ユーザーが手動で上書き可能
+        // "JA"/"EN"/"DE"/"FR"/"ZH" の5種類を順番にトグルできる
+        var ttsLang by remember { mutableStateOf("JA") }
         // 前回セッションで保存された読み位置（sentences が読み込まれたら一度だけ復元）
         val savedSessionIndex = remember { ttsPrefs.getInt("lastSentenceIndex", 0) }
         var hasRestoredSession by remember { mutableStateOf(false) }
@@ -819,14 +973,26 @@ class MainActivity : ComponentActivity() {
 
         // ★isEditMode時のバック確認ダイアログ表示フラグ
         var showUnsavedDialog by remember { mutableStateOf(false) }
+        // ★音声パック未インストール警告ダイアログ：不足言語の表示名リストを保持
+        // 空リストのとき非表示、1つ以上のときダイアログ表示
+        var missingVoicePackNames by remember { mutableStateOf<List<String>>(emptyList()) }
+        // 「Play Anyway」用：ダイアログを閉じた後に実行する再生処理を一時保存
+        var pendingPlayAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
         // ★非対応ファイル形式ダイアログ用：タップされたファイルのURIを保持
         var unsupportedFileUri by remember { mutableStateOf<Uri?>(null) }
 
-        // ★textが変更されたら編集用テキストも更新
+        // ★textが変更されたら編集用テキストも更新、かつ言語を全体で自動判定
         LaunchedEffect(text) {
             if (!isEditMode) {
                 editingText = text
+            }
+            if (text.isNotEmpty()) {
+                // ドキュメント全体の特徴から基底言語を推定する（センテンス判定のフォールバック用）
+                // TextProcessor.detectLanguage に委譲（TtsServiceと同じロジックを共有）
+                val detectedLocale = TextProcessor.detectLanguage(text)
+                ttsLang = localeToTtsLang(detectedLocale)
+                ttsService?.setBaseLanguage(ttsLangToLocale(ttsLang))
             }
         }
 
@@ -850,30 +1016,114 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // ★⑤ネオブルータリスト未保存ダイアログ
+        // ★カラーシステム（ライト/ダークモード切替）
+        // ダイアログより前に定義する必要があるため、ここに置く
+        val isDark = isSystemInDarkTheme()
+        val bgColor         = if (isDark) Color(0xFF0A0A0B) else Color(0xFFF3F4F6)
+        val paperColor      = if (isDark) Color(0xFF1E1E21) else Color.White
+        val primaryColor    = if (isDark) Color(0xFF818CF8) else Color(0xFF6366F1)
+        val textPrimary     = if (isDark) Color.White       else Color(0xFF1E293B)
+        val textSecondary   = if (isDark) Color(0xFFCBD5E1) else Color(0xFF475569)
+        val textMuted       = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8)
+        val handleColor     = if (isDark) Color(0xFF2D2D30) else Color(0xFFE2E8F0)
+        val sliderBg        = if (isDark) Color(0xFF0A0A0B) else Color(0xFFE2E8F0)
+        val speedGradient = Brush.horizontalGradient(colors = listOf(
+            if (isDark) Color(0xFFFF2E97) else Color(0xFFEC4899),
+            if (isDark) Color(0xFF818CF8) else Color(0xFF6366F1)
+        ))
+        val pitchGradient = Brush.horizontalGradient(colors = listOf(
+            if (isDark) Color(0xFF00F2FF) else Color(0xFF06B6D4),
+            if (isDark) Color(0xFF818CF8) else Color(0xFF6366F1)
+        ))
+        val playGradient = Brush.linearGradient(
+            colors = listOf(
+                if (isDark) Color(0xFF818CF8) else Color(0xFF6366F1),
+                if (isDark) Color(0xFFFF2E97) else Color(0xFFEC4899)
+            ),
+            start = Offset(0f, 0f),
+            end   = Offset(200f, 200f)
+        )
+
+        // ★音声パック未インストール警告ダイアログ
+        if (missingVoicePackNames.isNotEmpty()) {
+            Dialog(onDismissRequest = { missingVoicePackNames = emptyList(); pendingPlayAction = null }) {
+                Box(
+                    modifier = Modifier
+                        .shadow(16.dp, RoundedCornerShape(20.dp))
+                        .background(paperColor, RoundedCornerShape(20.dp))
+                        .padding(24.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Text("Voice Packs Missing", fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, color = textPrimary)
+                        Text("The following languages were detected but voice packs are not installed:",
+                            fontSize = 14.sp, color = textMuted)
+                        // 不足している言語を箇条書きで列挙
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            missingVoicePackNames.forEach { name ->
+                                Text("• $name", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = textPrimary)
+                            }
+                        }
+                        Text("These sections will be read in English instead.",
+                            fontSize = 13.sp, color = textMuted)
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            // Play Anyway（控えめ）
+                            Box(modifier = Modifier.weight(1f).height(44.dp)
+                                .shadow(2.dp, RoundedCornerShape(12.dp))
+                                .background(paperColor, RoundedCornerShape(12.dp))
+                                .clickable {
+                                    val action = pendingPlayAction
+                                    missingVoicePackNames = emptyList()
+                                    pendingPlayAction = null
+                                    action?.invoke()
+                                }, contentAlignment = Alignment.Center) {
+                                Text("Play Anyway", fontWeight = FontWeight.Bold, color = textMuted, fontSize = 13.sp)
+                            }
+                            // Go to Settings（目立つ：グラデーション）
+                            Box(modifier = Modifier.weight(1f).height(44.dp)
+                                .shadow(4.dp, RoundedCornerShape(12.dp))
+                                .background(playGradient, RoundedCornerShape(12.dp))
+                                .clickable {
+                                    missingVoicePackNames = emptyList()
+                                    pendingPlayAction = null
+                                    context.startActivity(Intent("com.android.settings.TTS_SETTINGS").apply {
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    })
+                                }, contentAlignment = Alignment.Center) {
+                                Text("Go to Settings", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (showUnsavedDialog) {
             Dialog(onDismissRequest = { showUnsavedDialog = false }) {
-                Box(modifier = Modifier.wrapContentHeight().padding(end = 4.dp, bottom = 4.dp)) {
-                    Box(modifier = Modifier.matchParentSize().offset(x = 4.dp, y = 4.dp).background(Color.Black, RoundedCornerShape(16.dp)))
-                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = Color.Black), elevation = CardDefaults.cardElevation(0.dp), border = BorderStroke(4.dp, Color.Black)) {
-                        Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                            Text("Leave without saving?", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                            Text("Your changes will be lost.", fontSize = 14.sp, color = Color.Gray)
-                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                // YES（控えめ：白背景 + 黒枠）
-                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
-                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color.Black, RoundedCornerShape(8.dp)))
-                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.White, RoundedCornerShape(8.dp)).clickable { showUnsavedDialog = false; editingText = text; isEditMode = false }.padding(12.dp), contentAlignment = Alignment.Center) {
-                                        Text("YES", fontWeight = FontWeight.Bold, color = Color.Black)
-                                    }
-                                }
-                                // NO（目立つ：黒背景 + 白文字）
-                                Box(modifier = Modifier.weight(1f).padding(end = 2.dp, bottom = 2.dp)) {
-                                    Box(modifier = Modifier.matchParentSize().offset(x = 2.dp, y = 2.dp).background(Color(0xFF444444), RoundedCornerShape(8.dp)))
-                                    Box(modifier = Modifier.fillMaxWidth().border(2.dp, Color.Black, RoundedCornerShape(8.dp)).background(Color.Black, RoundedCornerShape(8.dp)).clickable { showUnsavedDialog = false }.padding(12.dp), contentAlignment = Alignment.Center) {
-                                        Text("NO", fontWeight = FontWeight.Bold, color = Color.White)
-                                    }
-                                }
+                Box(
+                    modifier = Modifier
+                        .shadow(16.dp, RoundedCornerShape(20.dp))
+                        .background(paperColor, RoundedCornerShape(20.dp))
+                        .padding(24.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Text("Leave without saving?", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = textPrimary)
+                        Text("Your changes will be lost.", fontSize = 14.sp, color = textMuted)
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            // YES（控えめ）
+                            Box(modifier = Modifier.weight(1f).height(44.dp)
+                                .shadow(2.dp, RoundedCornerShape(12.dp))
+                                .background(paperColor, RoundedCornerShape(12.dp))
+                                .clickable { showUnsavedDialog = false; editingText = text; isEditMode = false },
+                                contentAlignment = Alignment.Center) {
+                                Text("YES", fontWeight = FontWeight.Bold, color = textMuted, fontSize = 14.sp)
+                            }
+                            // NO（目立つ：グラデーション）
+                            Box(modifier = Modifier.weight(1f).height(44.dp)
+                                .shadow(4.dp, RoundedCornerShape(12.dp))
+                                .background(playGradient, RoundedCornerShape(12.dp))
+                                .clickable { showUnsavedDialog = false },
+                                contentAlignment = Alignment.Center) {
+                                Text("NO", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
                             }
                         }
                     }
@@ -993,13 +1243,13 @@ class MainActivity : ComponentActivity() {
                                 try {
                                     val doc = Jsoup.connect(url).userAgent("Mozilla/5.0").timeout(10000).get()
                                     val bodyText = doc.body().text()
-                                    withContext(Dispatchers.Main) { onUpdateText(bodyText) }
+                                    withContext(Dispatchers.Main) { onUpdateText(bodyText, false) }
                                 } catch (e: Exception) {
-                                    withContext(Dispatchers.Main) { onUpdateText("エラー: ${e.message}") }
+                                    withContext(Dispatchers.Main) { onUpdateText("エラー: ${e.message}", false) }
                                 }
                             }
                         } else {
-                            onUpdateText(sharedText)
+                            onUpdateText(sharedText, false)
                         }
                         activity.intent.removeExtra(Intent.EXTRA_TEXT)
                     }
@@ -1039,7 +1289,7 @@ class MainActivity : ComponentActivity() {
                     withContext(Dispatchers.Main) {
                         isLoadingFile = false  // ファイル読み込み完了
                         if (text.isNotEmpty()) {
-                            onUpdateText(text)
+                            onUpdateText(text, false)
                         } else if (mimeType.contains("pdf")) {
                             // PDF読み込み失敗（画像だけのPDF・パスワード付き等）
                             Toast.makeText(context, "Could not read PDF. It may be image-only or password-protected.", Toast.LENGTH_LONG).show()
@@ -1129,33 +1379,6 @@ class MainActivity : ComponentActivity() {
         // ★BottomSheetScaffoldの状態（編集モード中も常に保持するためif-elseの外で定義）
         val scaffoldState = rememberBottomSheetScaffoldState()
 
-        // ★カラーシステム（ライト/ダークモード切替）
-        val isDark = isSystemInDarkTheme()
-        val bgColor         = if (isDark) Color(0xFF0A0A0B) else Color(0xFFF3F4F6)
-        val paperColor      = if (isDark) Color(0xFF1E1E21) else Color.White
-        val primaryColor    = if (isDark) Color(0xFF818CF8) else Color(0xFF6366F1)
-        val textPrimary     = if (isDark) Color.White       else Color(0xFF1E293B)
-        val textSecondary   = if (isDark) Color(0xFFCBD5E1) else Color(0xFF475569)
-        val textMuted       = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8)
-        val handleColor     = if (isDark) Color(0xFF2D2D30) else Color(0xFFE2E8F0)
-        val sliderBg        = if (isDark) Color(0xFF0A0A0B) else Color(0xFFE2E8F0)
-        val speedGradient = Brush.horizontalGradient(colors = listOf(
-            if (isDark) Color(0xFFFF2E97) else Color(0xFFEC4899),
-            if (isDark) Color(0xFF818CF8) else Color(0xFF6366F1)
-        ))
-        val pitchGradient = Brush.horizontalGradient(colors = listOf(
-            if (isDark) Color(0xFF00F2FF) else Color(0xFF06B6D4),
-            if (isDark) Color(0xFF818CF8) else Color(0xFF6366F1)
-        ))
-        val playGradient = Brush.linearGradient(
-            colors = listOf(
-                if (isDark) Color(0xFF818CF8) else Color(0xFF6366F1),
-                if (isDark) Color(0xFFFF2E97) else Color(0xFFEC4899)
-            ),
-            start = Offset(0f, 0f),
-            end   = Offset(200f, 200f)
-        )
-
         // ★パルスアニメーション：再生中にボタンとTrackバーがふわふわ光る
         // rememberInfiniteTransition = 永遠に繰り返すアニメーションの入れ物
         val pulseTransition = rememberInfiniteTransition()
@@ -1195,7 +1418,7 @@ class MainActivity : ComponentActivity() {
                         .background(paperColor, RoundedCornerShape(16.dp))
                         .clickable(interactionSource = headerSrc, indication = null) {
                             if (isEditMode) {
-                                onUpdateText(editingText); isEditMode = false; currentSentenceIndex = 0
+                                onUpdateText(editingText, true); isEditMode = false; currentSentenceIndex = 0
                             } else {
                                 if (isPlaying) { ttsService?.stop(); isPlaying = false }
                                 editingText = text; isEditMode = true
@@ -1259,6 +1482,19 @@ class MainActivity : ComponentActivity() {
                         },
                         sheetContent = {
                             Column(modifier = Modifier.fillMaxWidth()) {
+                                // ★再生前チェック：音声パックが不足していればダイアログを出し、問題なければ再生する
+                                // action に実際の speakList 呼び出しを渡す（「Play Anyway」でも同じ処理を再利用）
+                                fun playWithVoiceCheck(action: () -> Unit) {
+                                    val missing = ttsService?.checkMissingVoicePacks(sentences) ?: emptyList()
+                                    if (missing.isEmpty()) {
+                                        action()  // 問題なし → そのまま再生
+                                    } else {
+                                        // 不足言語の表示名（例: "German", "French"）をリストにして保持
+                                        missingVoicePackNames = missing.map { it.getDisplayLanguage(java.util.Locale.ENGLISH) }
+                                        pendingPlayAction = action  // Play Anyway 用に保存
+                                    }
+                                }
+
                                 // ★Transport用プレスエフェクト変数（◄ 再生 ► それぞれ独立）
                                 val prevSrc  = remember { MutableInteractionSource() }
                                 val prevPressed  by prevSrc.collectIsPressedAsState()
@@ -1308,10 +1544,12 @@ class MainActivity : ComponentActivity() {
                                             } else {
                                                 if (sentences.isNotEmpty()) {
                                                     val s = if (currentSentenceIndex in sentences.indices) currentSentenceIndex else 0
-                                                    ttsService?.setSpeechRate(speechRate); ttsService?.setPitch(pitch)
-                                                    setupTtsListener(); ttsService?.speakList(sentences, s)
-                                                    currentSentenceIndex = s; isPlaying = true
-                                                    isTtsStarting = true  // TTS起動中スピナー表示開始
+                                                    playWithVoiceCheck {
+                                                        ttsService?.setSpeechRate(speechRate); ttsService?.setPitch(pitch)
+                                                        setupTtsListener(); ttsService?.speakList(sentences, s)
+                                                        currentSentenceIndex = s; isPlaying = true
+                                                        isTtsStarting = true
+                                                    }
                                                 }
                                             }
                                         },
@@ -1433,7 +1671,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                                 // ──── 展開時のみ表示 ────
-                                Spacer(modifier = Modifier.height(6.dp))  // ★8→6dp
+                                Spacer(modifier = Modifier.height(6.dp))
                                 // PITCH スライダー
                                 Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                                     verticalAlignment = Alignment.CenterVertically) {
@@ -1462,9 +1700,41 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.width(36.dp), textAlign = TextAlign.End)
                                 }
                                 Spacer(modifier = Modifier.height(15.dp))  // ★20→15dp
-                                // 4つのアクションボタン
+                                // 5つのアクションボタン（Lang + Paste + Files + Prompts + Dict.）
                                 Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    // Lang ボタン：タップのたびに JA→EN→DE→FR→ZH→JA の順に切り替え
+                                    val langCycle = listOf("JA", "EN", "DE", "FR", "ZH")
+                                    val langSrc = remember { MutableInteractionSource() }
+                                    val langPressed by langSrc.collectIsPressedAsState()
+                                    val langScale by animateFloatAsState(if (langPressed) 0.88f else 1f, tween(80), label = "langBtn")
+                                    Column(modifier = Modifier.weight(1f)
+                                        .clickable(interactionSource = langSrc, indication = null) {
+                                            val next = (langCycle.indexOf(ttsLang) + 1) % langCycle.size
+                                            ttsLang = langCycle[next]
+                                            val locale = ttsLangToLocale(ttsLang)
+                                            ttsService?.setBaseLanguage(locale)
+                                            // 選んだ言語の音声パックが未インストールならすぐToastで知らせる
+                                            if (ttsService?.isVoiceAvailable(locale) == false) {
+                                                val langName = locale.getDisplayLanguage(java.util.Locale.ENGLISH)
+                                                Toast.makeText(context,
+                                                    "\"$langName\" voice pack not installed.\nSettings → Text-to-speech → Install voice data",
+                                                    Toast.LENGTH_LONG).show()
+                                            }
+                                        },
+                                        horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Box(modifier = Modifier.size(56.dp)
+                                            .scale(langScale)
+                                            .shadow(4.dp, RoundedCornerShape(16.dp))
+                                            .background(paperColor, RoundedCornerShape(16.dp)),
+                                            contentAlignment = Alignment.Center) {
+                                            // アイコンの代わりに言語コードをボタン内に大きく表示
+                                            Text(ttsLang, fontSize = 16.sp,
+                                                fontWeight = FontWeight.ExtraBold, color = primaryColor)
+                                        }
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text("Lang", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMuted)
+                                    }
                                     listOf(
                                         Triple(Icons.Default.ContentPaste, "Paste",
                                             if (isDark) Color(0xFFFF2E97) else Color(0xFFEC4899)),
@@ -1485,7 +1755,7 @@ class MainActivity : ComponentActivity() {
                                                     when (idx) {
                                                         0 -> { val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                                             val cd = cb.primaryClip
-                                                            if (cd != null && cd.itemCount > 0) onUpdateText(cd.getItemAt(0).text.toString()) }
+                                                            if (cd != null && cd.itemCount > 0) onUpdateText(cd.getItemAt(0).text.toString(), false) }
                                                         1 -> docPickerLauncher.launch(arrayOf("application/pdf",
                                                             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                                             "application/vnd.google-apps.document", "text/html", "text/plain"))
@@ -1692,55 +1962,95 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // リスト / 空状態
-            // ★weight(1f)：Columnの中でLazyColumnにfillMaxSizeを使うとレイアウト競合で
-            //   先頭カードの高さがズレる。weight(1f)で「残り全部」を正しく渡す
-            if (prompts.isEmpty()) {
-                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("Tap + to add a prompt", color = textMuted)
+            // ★常にLazyColumn。空状態も内部アイテムで表現する
+            // weight(1f)：Columnの中でLazyColumnが「残り全部」を正しく占有するために必須
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // 空状態メッセージ（プロンプトが0のとき）
+                if (prompts.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                            contentAlignment = Alignment.Center) {
+                            Text("Tap + to add your first prompt.",
+                                color = textMuted, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    // ★top=20dp：先頭カードのshadowがLazyColumnの上端でクリップされないよう余白確保
-                    contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    itemsIndexed(prompts) { index, prompt ->
-                        // ★クレイカード（黒枠なし・シャドウ + 角丸）
+
+                // プロンプトカード一覧
+                itemsIndexed(prompts) { index, prompt ->
+                    // ★クレイカード（黒枠なし・シャドウ + 角丸）
+                    Box(
+                        modifier = Modifier.fillMaxWidth()
+                            .shadow(4.dp, RoundedCornerShape(16.dp))
+                            .background(paperColor, RoundedCornerShape(16.dp))
+                            .clickable { onSelectPrompt(prompt) }
+                            .padding(16.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(prompt.title, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = textPrimary)
+                                Text(
+                                    text = if (prompt.content.length > 40) prompt.content.take(40) + "..." else prompt.content,
+                                    fontSize = 12.sp, color = textMuted
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            // 編集ボタン（clay白背景 + インジゴアイコン）
+                            Box(modifier = Modifier.size(44.dp)
+                                .shadow(3.dp, RoundedCornerShape(12.dp))
+                                .background(paperColor, RoundedCornerShape(12.dp))
+                                .clickable { onEditPrompt(index) },
+                                contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Edit, "Edit", modifier = Modifier.size(22.dp), tint = primaryColor)
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            // 削除ボタン（clay白背景 + ピンクアイコン・確認ダイアログ付き）
+                            Box(modifier = Modifier.size(44.dp)
+                                .shadow(3.dp, RoundedCornerShape(12.dp))
+                                .background(paperColor, RoundedCornerShape(12.dp))
+                                .clickable { deleteTargetIndex = index; showDeleteDialog = true },
+                                contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.Delete, "Delete", modifier = Modifier.size(22.dp), tint = pinkColor)
+                            }
+                        }
+                    }
+                }
+
+                // ★ヘルプボックス：プロンプトが5個未満のとき、リストの末尾に表示
+                // 5個以上になったら自動的に消える（慣れたユーザーには不要なため）
+                if (prompts.size < 5) {
+                    item {
                         Box(
                             modifier = Modifier.fillMaxWidth()
-                                .shadow(4.dp, RoundedCornerShape(16.dp))
-                                .background(paperColor, RoundedCornerShape(16.dp))
-                                .clickable { onSelectPrompt(prompt) }
+                                .background(primaryColor.copy(alpha = 0.07f), RoundedCornerShape(16.dp))
                                 .padding(16.dp)
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(prompt.title, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = textPrimary)
-                                    Text(
-                                        text = if (prompt.content.length > 40) prompt.content.take(40) + "..." else prompt.content,
-                                        fontSize = 12.sp, color = textMuted
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                // 編集ボタン（clay白背景 + インジゴアイコン）
-                                Box(modifier = Modifier.size(44.dp)
-                                    .shadow(3.dp, RoundedCornerShape(12.dp))
-                                    .background(paperColor, RoundedCornerShape(12.dp))
-                                    .clickable { onEditPrompt(index) },
-                                    contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.Edit, "Edit", modifier = Modifier.size(22.dp), tint = primaryColor)
-                                }
-                                Spacer(modifier = Modifier.width(6.dp))
-                                // 削除ボタン（clay白背景 + ピンクアイコン・確認ダイアログ付き）
-                                Box(modifier = Modifier.size(44.dp)
-                                    .shadow(3.dp, RoundedCornerShape(12.dp))
-                                    .background(paperColor, RoundedCornerShape(12.dp))
-                                    .clickable { deleteTargetIndex = index; showDeleteDialog = true },
-                                    contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Default.Delete, "Delete", modifier = Modifier.size(22.dp), tint = pinkColor)
-                                }
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("How Prompts work",
+                                    fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = primaryColor)
+                                Text(
+                                    "Save instructions you give to AI assistants (ChatGPT, Perplexity, etc.) " +
+                                    "to generate your reading scripts.\n" +
+                                    "Tap a prompt to copy it → paste to AI → paste the result back to Reader.",
+                                    fontSize = 12.sp, color = textMuted, lineHeight = 18.sp
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("What happens at playback",
+                                    fontWeight = FontWeight.Bold, fontSize = 12.sp, color = textMuted)
+                                Text(
+                                    "Saved prompts are automatically stripped from your text before reading.\n" +
+                                    "This keeps the AI's instructions out of the audio.",
+                                    fontSize = 12.sp, color = textMuted, lineHeight = 18.sp
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "This guide disappears after you have 5 or more prompts saved.",
+                                    fontSize = 11.sp, color = textMuted.copy(alpha = 0.7f), lineHeight = 15.sp
+                                )
                             }
                         }
                     }

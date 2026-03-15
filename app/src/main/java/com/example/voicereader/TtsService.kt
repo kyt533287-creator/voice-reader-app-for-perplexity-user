@@ -309,27 +309,10 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
         mediaSession.setPlaybackState(state)
     }
 
-    // ★新機能：テキストが主に英語かどうかを判定する（変更なし）
-    // 理由：英文は英語TTS、日本文は日本語TTSで読み分けるため
-    private fun detectLanguage(text: String): Locale {
-        // アルファベット（a-z, A-Z）の文字数をカウント
-        val latinChars = text.count { it in 'a'..'z' || it in 'A'..'Z' }
-        // 日本語文字（ひらがな、カタカナ、漢字）の文字数をカウント
-        val japaneseChars = text.count {
-            it in '\u3040'..'\u309F' || // ひらがな
-            it in '\u30A0'..'\u30FF' || // カタカナ
-            it in '\u4E00'..'\u9FFF'    // 漢字
-        }
-
-        // 判定ロジック：
-        // 1. 英字が20文字以上 かつ 日本語より多い → 英語
-        // 2. それ以外 → 日本語
-        return if (latinChars >= 20 && latinChars > japaneseChars) {
-            Locale.US  // 英語
-        } else {
-            Locale.JAPAN  // 日本語
-        }
-    }
+    // ★5言語対応：センテンスごとに言語を自動判定する（実装はTextProcessorに委譲）
+    // baseLocale = ユーザーが手動設定した基底言語（未設定時はLocale.US）
+    private fun detectLanguage(text: String): Locale =
+        TextProcessor.detectLanguage(text, baseLocale ?: Locale.US)
 
     // ★オーディオフォーカスを要求する（再生開始前に必ず呼ぶ）
     // 戻り値：true = フォーカス取得成功、false = 取得失敗（別アプリが占有中）
@@ -373,9 +356,8 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
         if (currentIndex in sentences.indices) {
             val text = sentences[currentIndex]
 
-            // 文ごとに言語を判定して切り替える（既存ロジック変更なし）
-            val detectedLocale = detectLanguage(text)
-            tts.language = detectedLocale
+            // センテンスごとに言語を自動判定（パック不足はサイレントフォールバック）
+            applyLanguage(detectLanguage(text))
 
             // UIに通知（ここでハイライト位置が決まる）
             listener?.onProgress(currentIndex, sentences.size)
@@ -418,6 +400,42 @@ class TtsService : Service(), TextToSpeech.OnInitListener {
             // 停止中は位置の更新だけUIに通知
             listener?.onProgress(currentIndex, sentences.size)
         }
+    }
+
+    // ベース言語設定（曖昧センテンスのフォールバック用）
+    // null にすると英語（Locale.US）にフォールバック
+    private var baseLocale: Locale? = null
+    fun setBaseLanguage(locale: Locale?) {
+        baseLocale = locale
+    }
+
+    // 言語を設定する。パック未インストールの場合はサイレントでフォールバック
+    // （警告は再生前ダイアログ・Langボタン Toast で行うのでここでは何も出さない）
+    private fun applyLanguage(locale: Locale) {
+        val result = tts.setLanguage(locale)
+        if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+            tts.setLanguage(baseLocale ?: Locale.US)  // パックなし → フォールバック
+        }
+    }
+
+    // ★再生前チェック用：センテンスリストを走査して未インストールの言語を返す
+    // MainActivity が▶を押す前にこれを呼んでダイアログを出す
+    fun checkMissingVoicePacks(sentences: List<String>): List<Locale> {
+        if (!::tts.isInitialized) return emptyList()
+        return sentences
+            .map { detectLanguage(it) }           // 各センテンスの言語を判定
+            .toSet()                               // 重複を除去
+            .filter { locale ->
+                val r = tts.isLanguageAvailable(locale)
+                r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED
+            }
+    }
+
+    // ★Langボタン用：指定 Locale の音声パックがインストール済みかを確認する
+    fun isVoiceAvailable(locale: Locale): Boolean {
+        if (!::tts.isInitialized) return true  // 初期化前は問題なしとして扱う
+        val r = tts.isLanguageAvailable(locale)
+        return r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED
     }
 
     // 外部から呼ばれる：速度設定（変更なし）
