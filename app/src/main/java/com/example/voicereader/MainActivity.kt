@@ -486,9 +486,16 @@ class MainActivity : ComponentActivity() {
                     DictionaryListScreen(
                         dictionary = dictionaryList,
                         onNavigateBack = {
-                            // 辞書変更を読み上げに反映するため、テキストを再処理する
-                            // skipClean=true：mainTextはすでに整形済みなので Perplexity整形はスキップ
-                            if (mainText.isNotEmpty()) updateMainText(mainText, skipClean = true)
+                            // 辞書変更を読み上げに反映するため sentences だけ再作成する
+                            // mainText（表示テキスト）は一切変更しない（辞書はTTSにのみ影響）
+                            if (mainText.isNotEmpty()) {
+                                scope.launch {
+                                    val applied = withContext(Dispatchers.Default) {
+                                        TextProcessor.applyDictionary(mainText, dictionaryList)
+                                    }
+                                    sentences = TextProcessor.splitSentences(applied)
+                                }
+                            }
                             currentScreen = Screen.Main
                         },
                         onEditEntry = { index ->
