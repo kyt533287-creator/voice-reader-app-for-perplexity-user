@@ -299,7 +299,8 @@ class MainActivity : ComponentActivity() {
                     DictionaryEntry("### ", "", true),      // H3見出し
                     DictionaryEntry("## ",  "", true),      // H2見出し
                     DictionaryEntry("# ",   "", true),      // H1見出し
-                    DictionaryEntry("***",  "", true),      // 太字+斜体（** は cleanPerplexityText が処理）
+                    DictionaryEntry("***",  "", true),      // 太字+斜体（*** → cleanPerplexityText が ** を処理し残った * を除去）
+                    DictionaryEntry("*",    "", true),      // 単体アスタリスク（*italic* の記号・箇条書き記号）
                     DictionaryEntry("---",  "", true),      // 水平線（区切り線）
                     DictionaryEntry("> ",   "", true),      // 引用ブロック
                     // URL削除サンプル：$$$ワイルドカード（OFF状態：必要な人だけONにする）
@@ -860,13 +861,18 @@ class MainActivity : ComponentActivity() {
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text("Examples", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = textMuted)
+                        // (blank) = replacement is empty → text is deleted and NOT read aloud
+                        Text("(blank) = deleted from reading — not pronounced",
+                            fontSize = 10.sp, color = textMuted.copy(alpha = 0.7f), lineHeight = 14.sp)
+                        Spacer(modifier = Modifier.height(2.dp))
                         // 例一覧（置換元 → 置換先 説明）
                         listOf(
-                            Triple("# ",         "(blank)",        "removes heading markers"),
-                            Triple("## ",        "(blank)",        "removes subheading markers"),
-                            Triple("---",        "(blank)",        "removes divider lines"),
-                            Triple("URL",        "ユーアールエル",  "reads abbreviations aloud"),
-                            Triple("https://\$\$\$", "(blank)",    "removes entire URLs"),
+                            Triple("# ",             "(blank)",  "heading marker — not read aloud"),
+                            Triple("## ",            "(blank)",  "subheading marker — not read aloud"),
+                            Triple("---",            "(blank)",  "divider line — not read aloud"),
+                            Triple("Dr.",            "Doctor",   "expand abbreviations"),
+                            Triple("【\$\$\$】",     "(blank)",  "removes 【bracketed】 groups"),
+                            Triple("https://\$\$\$", "(blank)",  "removes entire URLs"),
                         ).forEach { (orig, repl, desc) ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("\"$orig\"", fontSize = 11.sp, color = textPrimary, fontWeight = FontWeight.SemiBold,

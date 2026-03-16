@@ -89,12 +89,22 @@ object TextProcessor {
 
         // 有効な辞書エントリだけ処理
         dictionary.filter { it.isEnabled }.forEach { entry ->
-            if (entry.original.endsWith("\$\$\$")) {
-                // ★ワイルドカード "$$$" ：末尾の "$$$" が「空白以外の任意の文字列（0文字以上）」にマッチ
-                // 例: "https://$$$" → https://www.example.com/path?q=1 を丸ごとマッチして削除
-                val prefix = Regex.escape(entry.original.dropLast(3))
-                val pattern = Regex("$prefix\\S*", RegexOption.IGNORE_CASE)
-                processedText = pattern.replace(processedText, entry.replacement)
+            if (entry.original.contains("\$\$\$")) {
+                if (entry.original.endsWith("\$\$\$")) {
+                    // ★末尾ワイルドカード：prefix の後ろにある空白以外の文字列をまるごとマッチ
+                    // 用途：URL削除。例 "https://$$$" → "https://example.com/path?q=1" を丸ごと削除
+                    val prefix = Regex.escape(entry.original.dropLast(3))
+                    val pattern = Regex("$prefix\\S*", RegexOption.IGNORE_CASE)
+                    processedText = pattern.replace(processedText, entry.replacement)
+                } else {
+                    // ★中間ワイルドカード：$$$ の前後を固定し、間の内容（空白含む）をまるごとマッチ
+                    // 用途：括弧内削除。例 "【$$$】" → "【見出し】" "【注釈テキスト】" を丸ごと削除
+                    // *? は最小マッチ（欲張らない）→ 隣の括弧を巻き込まない
+                    val parts = entry.original.split("\$\$\$")
+                    val patternStr = parts.joinToString("[\\s\\S]*?") { Regex.escape(it) }
+                    val pattern = Regex(patternStr, RegexOption.IGNORE_CASE)
+                    processedText = pattern.replace(processedText, entry.replacement)
+                }
             } else if (processedText.contains(entry.original, ignoreCase = true)) {
                 // 通常の文字列置換（従来通り）
                 processedText = processedText.replace(
