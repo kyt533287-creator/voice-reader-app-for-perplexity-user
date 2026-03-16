@@ -562,48 +562,29 @@ class MainActivity : ComponentActivity() {
         var showDeleteDialog by remember { mutableStateOf(false) }
         var deleteTargetIndex by remember { mutableIntStateOf(-1) }
 
-        // ★クレイモーフィズム カラーパレット（再生画面と統一）
-        val isDark       = isSystemInDarkTheme()
-        val bgColor      = if (isDark) Color(0xFF1A1A2E) else Color(0xFFF0F4FF)
-        val paperColor   = if (isDark) Color(0xFF16213E) else Color(0xFFFFFFFF)
-        val primaryColor = Color(0xFF6366F1)
-        val textPrimary  = if (isDark) Color(0xFFE2E8F0) else Color(0xFF1E293B)
-        val textMuted    = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8)
-        val pinkColor    = if (isDark) Color(0xFFFF2E97) else Color(0xFFEC4899)
-        val greenColor   = if (isDark) Color(0xFF34D399) else Color(0xFF10B981)
-        val gradient     = Brush.horizontalGradient(listOf(Color(0xFF6366F1), Color(0xFFEC4899)))
+        // ★クレイモーフィズム カラーパレット（サブ画面共通 → UIComponents.kt）
+        val c            = subScreenColors()
+        val bgColor      = c.bgColor
+        val paperColor   = c.paperColor
+        val primaryColor = c.primaryColor
+        val textPrimary  = c.textPrimary
+        val textMuted    = c.textMuted
+        val pinkColor    = c.pinkColor
+        val greenColor   = c.greenColor
+        val gradient     = c.gradient
 
-        // ★削除確認ダイアログ（クレイモーフィズム）
+        // ★削除確認ダイアログ（共通コンポーネント → UIComponents.kt）
         if (showDeleteDialog) {
-            Dialog(onDismissRequest = { showDeleteDialog = false }) {
-                Box(
-                    modifier = Modifier
-                        .shadow(16.dp, RoundedCornerShape(20.dp))
-                        .background(paperColor, RoundedCornerShape(20.dp))
-                        .padding(24.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Text("Delete this entry?", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = textPrimary)
-                        Text("This action cannot be undone.", fontSize = 14.sp, color = textMuted)
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Box(modifier = Modifier.weight(1f).height(44.dp)
-                                .shadow(2.dp, RoundedCornerShape(12.dp))
-                                .background(paperColor, RoundedCornerShape(12.dp))
-                                .clickable { showDeleteDialog = false; onDeleteEntry(deleteTargetIndex) },
-                                contentAlignment = Alignment.Center) {
-                                Text("YES", fontWeight = FontWeight.Bold, color = textMuted, fontSize = 14.sp)
-                            }
-                            Box(modifier = Modifier.weight(1f).height(44.dp)
-                                .shadow(4.dp, RoundedCornerShape(12.dp))
-                                .background(gradient, RoundedCornerShape(12.dp))
-                                .clickable { showDeleteDialog = false },
-                                contentAlignment = Alignment.Center) {
-                                Text("NO", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
-                            }
-                        }
-                    }
-                }
-            }
+            ConfirmDialog(
+                title      = "Delete this entry?",
+                message    = "This action cannot be undone.",
+                gradient   = gradient,
+                paperColor = paperColor,
+                textPrimary = textPrimary,
+                textMuted  = textMuted,
+                onYes = { showDeleteDialog = false; onDeleteEntry(deleteTargetIndex) },
+                onNo  = { showDeleteDialog = false },
+            )
         }
 
         // ★クレイモーフィズム レイアウト
@@ -732,47 +713,27 @@ class MainActivity : ComponentActivity() {
         }
 
         // ★クレイモーフィズム カラーパレット（再生画面と統一）
-        val isDark       = isSystemInDarkTheme()
-        val bgColor      = if (isDark) Color(0xFF1A1A2E) else Color(0xFFF0F4FF)
-        val paperColor   = if (isDark) Color(0xFF16213E) else Color(0xFFFFFFFF)
-        val primaryColor = Color(0xFF6366F1)
-        val textPrimary  = if (isDark) Color(0xFFE2E8F0) else Color(0xFF1E293B)
-        val textMuted    = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8)
-        val gradient     = Brush.horizontalGradient(listOf(Color(0xFF6366F1), Color(0xFFEC4899)))
+        // ★クレイモーフィズム カラーパレット（サブ画面共通 → UIComponents.kt）
+        val c            = subScreenColors()
+        val bgColor      = c.bgColor
+        val paperColor   = c.paperColor
+        val primaryColor = c.primaryColor
+        val textPrimary  = c.textPrimary
+        val textMuted    = c.textMuted
+        val gradient     = c.gradient
 
-        // ★クレイモーフィズム 未保存ダイアログ
+        // ★未保存ダイアログ（共通コンポーネント → UIComponents.kt）
         if (showDialog) {
-            Dialog(onDismissRequest = { showDialog = false }) {
-                Box(
-                    modifier = Modifier
-                        .shadow(8.dp, RoundedCornerShape(20.dp))
-                        .background(paperColor, RoundedCornerShape(20.dp))
-                        .padding(24.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Text("Leave without saving?", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = textPrimary)
-                        Text("Your changes will be lost.", fontSize = 14.sp, color = textMuted)
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            // YES（控えめ）
-                            Box(modifier = Modifier.weight(1f).height(44.dp)
-                                .shadow(2.dp, RoundedCornerShape(12.dp))
-                                .background(paperColor, RoundedCornerShape(12.dp))
-                                .clickable { showDialog = false; onCancel() },
-                                contentAlignment = Alignment.Center) {
-                                Text("YES", fontWeight = FontWeight.Bold, color = textMuted, fontSize = 14.sp)
-                            }
-                            // NO（目立つ：グラデーション）
-                            Box(modifier = Modifier.weight(1f).height(44.dp)
-                                .shadow(4.dp, RoundedCornerShape(12.dp))
-                                .background(gradient, RoundedCornerShape(12.dp))
-                                .clickable { showDialog = false },
-                                contentAlignment = Alignment.Center) {
-                                Text("NO", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
-                            }
-                        }
-                    }
-                }
-            }
+            ConfirmDialog(
+                title      = "Leave without saving?",
+                message    = "Your changes will be lost.",
+                gradient   = gradient,
+                paperColor = paperColor,
+                textPrimary = textPrimary,
+                textMuted  = textMuted,
+                onYes = { showDialog = false; onCancel() },
+                onNo  = { showDialog = false },
+            )
         }
 
         // ★横向き + キーボード表示中の検知
@@ -1892,49 +1853,29 @@ class MainActivity : ComponentActivity() {
         var deleteTargetIndex by remember { mutableIntStateOf(-1) }
 
         // ★クレイモーフィズム カラーパレット（再生画面と統一）
-        val isDark       = isSystemInDarkTheme()
-        val bgColor      = if (isDark) Color(0xFF1A1A2E) else Color(0xFFF0F4FF)
-        val paperColor   = if (isDark) Color(0xFF16213E) else Color(0xFFFFFFFF)
-        val primaryColor = Color(0xFF6366F1)
-        val textPrimary  = if (isDark) Color(0xFFE2E8F0) else Color(0xFF1E293B)
-        val textMuted    = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8)
-        val pinkColor    = if (isDark) Color(0xFFFF2E97) else Color(0xFFEC4899)
+        // ★クレイモーフィズム カラーパレット（サブ画面共通 → UIComponents.kt）
+        val c            = subScreenColors()
+        val bgColor      = c.bgColor
+        val paperColor   = c.paperColor
+        val primaryColor = c.primaryColor
+        val textPrimary  = c.textPrimary
+        val textMuted    = c.textMuted
+        val pinkColor    = c.pinkColor
         // ★horizontalGradient：ボタンの幅に自動フィットするため小さいボタンでも確実にグラデが出る
-        val gradient     = Brush.horizontalGradient(listOf(Color(0xFF6366F1), Color(0xFFEC4899)))
+        val gradient     = c.gradient
 
-        // ★削除確認ダイアログ（クレイモーフィズム）
+        // ★削除確認ダイアログ（共通コンポーネント → UIComponents.kt）
         if (showDeleteDialog) {
-            Dialog(onDismissRequest = { showDeleteDialog = false }) {
-                Box(
-                    modifier = Modifier
-                        .shadow(16.dp, RoundedCornerShape(20.dp))
-                        .background(paperColor, RoundedCornerShape(20.dp))
-                        .padding(24.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Text("Delete this prompt?", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = textPrimary)
-                        Text("This action cannot be undone.", fontSize = 14.sp, color = textMuted)
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            // YES（控えめ：アウトライン）
-                            Box(modifier = Modifier.weight(1f).height(44.dp)
-                                .shadow(2.dp, RoundedCornerShape(12.dp))
-                                .background(paperColor, RoundedCornerShape(12.dp))
-                                .clickable { showDeleteDialog = false; onDeletePrompt(deleteTargetIndex) },
-                                contentAlignment = Alignment.Center) {
-                                Text("YES", fontWeight = FontWeight.Bold, color = textMuted, fontSize = 14.sp)
-                            }
-                            // NO（目立つ：グラデーション）
-                            Box(modifier = Modifier.weight(1f).height(44.dp)
-                                .shadow(4.dp, RoundedCornerShape(12.dp))
-                                .background(gradient, RoundedCornerShape(12.dp))
-                                .clickable { showDeleteDialog = false },
-                                contentAlignment = Alignment.Center) {
-                                Text("NO", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
-                            }
-                        }
-                    }
-                }
-            }
+            ConfirmDialog(
+                title      = "Delete this prompt?",
+                message    = "This action cannot be undone.",
+                gradient   = gradient,
+                paperColor = paperColor,
+                textPrimary = textPrimary,
+                textMuted  = textMuted,
+                onYes = { showDeleteDialog = false; onDeletePrompt(deleteTargetIndex) },
+                onNo  = { showDeleteDialog = false },
+            )
         }
 
         // ★クレイモーフィズム レイアウト
@@ -2249,47 +2190,27 @@ class MainActivity : ComponentActivity() {
         }
 
         // ★クレイモーフィズム カラーパレット（再生画面と統一）
-        val isDark       = isSystemInDarkTheme()
-        val bgColor      = if (isDark) Color(0xFF1A1A2E) else Color(0xFFF0F4FF)
-        val paperColor   = if (isDark) Color(0xFF16213E) else Color(0xFFFFFFFF)
-        val primaryColor = Color(0xFF6366F1)
-        val textPrimary  = if (isDark) Color(0xFFE2E8F0) else Color(0xFF1E293B)
-        val textMuted    = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8)
-        val gradient     = Brush.horizontalGradient(listOf(Color(0xFF6366F1), Color(0xFFEC4899)))
+        // ★クレイモーフィズム カラーパレット（サブ画面共通 → UIComponents.kt）
+        val c            = subScreenColors()
+        val bgColor      = c.bgColor
+        val paperColor   = c.paperColor
+        val primaryColor = c.primaryColor
+        val textPrimary  = c.textPrimary
+        val textMuted    = c.textMuted
+        val gradient     = c.gradient
 
-        // ★未保存ダイアログ（クレイモーフィズム）
+        // ★未保存ダイアログ（共通コンポーネント → UIComponents.kt）
         if (showDialog) {
-            Dialog(onDismissRequest = { showDialog = false }) {
-                Box(
-                    modifier = Modifier
-                        .shadow(16.dp, RoundedCornerShape(20.dp))
-                        .background(paperColor, RoundedCornerShape(20.dp))
-                        .padding(24.dp)
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Text("Leave without saving?", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = textPrimary)
-                        Text("Your changes will be lost.", fontSize = 14.sp, color = textMuted)
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            // YES（控えめ：アウトライン）
-                            Box(modifier = Modifier.weight(1f).height(44.dp)
-                                .shadow(2.dp, RoundedCornerShape(12.dp))
-                                .background(paperColor, RoundedCornerShape(12.dp))
-                                .clickable { showDialog = false; onCancel() },
-                                contentAlignment = Alignment.Center) {
-                                Text("YES", fontWeight = FontWeight.Bold, color = textMuted, fontSize = 14.sp)
-                            }
-                            // NO（目立つ：グラデーション）
-                            Box(modifier = Modifier.weight(1f).height(44.dp)
-                                .shadow(4.dp, RoundedCornerShape(12.dp))
-                                .background(gradient, RoundedCornerShape(12.dp))
-                                .clickable { showDialog = false },
-                                contentAlignment = Alignment.Center) {
-                                Text("NO", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
-                            }
-                        }
-                    }
-                }
-            }
+            ConfirmDialog(
+                title      = "Leave without saving?",
+                message    = "Your changes will be lost.",
+                gradient   = gradient,
+                paperColor = paperColor,
+                textPrimary = textPrimary,
+                textMuted  = textMuted,
+                onYes = { showDialog = false; onCancel() },
+                onNo  = { showDialog = false },
+            )
         }
 
         // ★横向き + キーボード表示中の検知
