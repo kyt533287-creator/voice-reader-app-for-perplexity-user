@@ -485,7 +485,12 @@ class MainActivity : ComponentActivity() {
                 Screen.DictionaryList -> {
                     DictionaryListScreen(
                         dictionary = dictionaryList,
-                        onNavigateBack = { currentScreen = Screen.Main },
+                        onNavigateBack = {
+                            // 辞書変更を読み上げに反映するため、テキストを再処理する
+                            // skipClean=true：mainTextはすでに整形済みなので Perplexity整形はスキップ
+                            if (mainText.isNotEmpty()) updateMainText(mainText, skipClean = true)
+                            currentScreen = Screen.Main
+                        },
                         onEditEntry = { index ->
                             editingDictionaryIndex = index
                             currentScreen = Screen.DictionaryEdit
