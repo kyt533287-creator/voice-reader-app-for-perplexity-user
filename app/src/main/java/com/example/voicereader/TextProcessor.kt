@@ -70,16 +70,30 @@ object TextProcessor {
         return cleanedText.trim()
     }
 
-    // ★新規追加：Perplexity専用の整形処理
+    // ★Perplexity・AIテキスト向け整形処理
+    // cleanPerplexityText = マークダウン記法の「ノイズ文字」を読み上げ前に除去する掃除機
+    // ※ applyDictionary() の前に実行される。辞書と役割分担：
+    //   cleanPerplexityText → マークダウン構文の除去（構造ノイズ）
+    //   applyDictionary     → ユーザー定義の読み替え・削除（内容ノイズ）
     fun cleanPerplexityText(text: String): String {
         return text
             // 1. 引用番号を削除 [12] → 削除
             .replace(Regex("\\[\\d+\\]"), "")
-            // 2. マークダウンの強調記号を削除 **重要語** → 重要語
-            .replace(Regex("\\*\\*([^*]+?)\\*\\*"), "$1")
+            // 2. アスタリスクをすべて削除（* ** *** 何個でも。箇条書き・強調・太字イタリックに使われる）
+            .replace(Regex("\\*+"), "")
             // 3. URLを削除（http:// または https:// で始まる文字列）
             .replace(Regex("https?://\\S+"), "")
-            // 4. 連続する空白を1つに
+            // 4. 見出し記号を削除（行頭の # ## ### のみ。#hashtag や URL の # は巻き込まない）
+            .replace(Regex("(?m)^#{1,3}\\s*"), "")
+            // 5. 水平線を削除（--- や === が3文字以上続く行全体）
+            .replace(Regex("(?m)^[-=]{3,}\\s*$"), "")
+            // 6. テーブルのパイプ記号を半角スペースに置換（| → 空白。表の内容は読み上げる）
+            .replace("|", " ")
+            // 7. コードブロックフェンスを削除（```kotlin など言語ヒントつきも対応。内容は残す）
+            .replace(Regex("```[a-zA-Z]*"), "")
+            // 8. 残りのバッククォートを削除（インラインコード `someCode` のマーカーのみ消去。内容は残す）
+            .replace("`", "")
+            // 9. 連続する空白を1つに
             .replace(Regex("\\s{2,}"), " ")
             .trim()
     }

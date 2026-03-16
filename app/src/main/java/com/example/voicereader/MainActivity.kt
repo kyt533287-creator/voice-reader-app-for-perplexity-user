@@ -294,18 +294,19 @@ class MainActivity : ComponentActivity() {
             // 初回起動（一度も辞書を保存したことがない）→ デフォルトエントリーを登録
             if (count == -1) {
                 val defaults = listOf(
-                    // AIがよく出力するマークダウン記号（TTS で読み上げると雑音になるため削除）
-                    // ★スペース付き "# " にすることで "#hashtag" や URL の # への誤ヒットを防ぐ
-                    DictionaryEntry("### ", "", true),      // H3見出し
-                    DictionaryEntry("## ",  "", true),      // H2見出し
-                    DictionaryEntry("# ",   "", true),      // H1見出し
-                    DictionaryEntry("***",  "", true),      // 太字+斜体（*** → cleanPerplexityText が ** を処理し残った * を除去）
-                    DictionaryEntry("*",    "", true),      // 単体アスタリスク（*italic* の記号・箇条書き記号）
-                    DictionaryEntry("---",  "", true),      // 水平線（区切り線）
-                    DictionaryEntry("> ",   "", true),      // 引用ブロック
-                    // URL削除サンプル：$$$ワイルドカード（OFF状態：必要な人だけONにする）
-                    // "https://$$$" は "https://www.example.com/path?q=1" を丸ごと削除する
-                    // ★Paste/ファイル読込時はcleanPerplexityTextが自動でURL削除するためOFF推奨
+                    // ★ # ## ### / * ** *** / --- / | / ` などのマークダウン記号は
+                    //   cleanPerplexityText() が自動除去するため辞書には不要
+                    //   辞書には「cleanPerplexityText が対応しないもの」だけを登録する
+
+                    // 引用ブロック（> ）→ cleanPerplexityText 未対応のためここで対応
+                    DictionaryEntry("> ", "", true),
+
+                    // 括弧系ノイズ削除サンプル：$$$ワイルドカード（OFF状態：使いたい人だけONにする）
+                    // "【$$$】" は "【見出し】" "【PR】" のような括弧全体を削除する
+                    DictionaryEntry("【\$\$\$】", "", false),   // 【括弧】を丸ごと削除
+
+                    // URL削除サンプル：cleanPerplexityTextのURL削除をOFFにしている場合の手動代替
+                    // （OFF状態：通常は cleanPerplexityText が自動で処理するため不要）
                     DictionaryEntry("https://\$\$\$", "", false),  // HTTPS URL を丸ごと削除
                     DictionaryEntry("http://\$\$\$",  "", false),  // HTTP  URL を丸ごと削除
                 )
