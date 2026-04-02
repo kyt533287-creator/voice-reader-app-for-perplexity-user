@@ -27,7 +27,7 @@ android {
         applicationId = "com.bridgetts.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        versionCode = 4
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -55,6 +55,11 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true  // BuildConfig クラスを生成する（AdMob ID 参照に必要）
+    }
+
+    lint {
+        // 既存のLint警告をベースラインとして記録し、新規エラーのみを検出する
+        baseline = file("lint-baseline.xml")
     }
 }
 
@@ -89,6 +94,14 @@ dependencies {
         exclude(group = "org.bouncycastle")
     }
 
+    // WorkManager（AdMobが内部で使用。明示的に指定してR8削除を防ぐ）
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
     // AdMob（Google モバイル広告 SDK）
     implementation("com.google.android.gms:play-services-ads:23.3.0")
+
+    // UMP（ユーザー同意管理 SDK）：GDPRなどの法的要件に対応するための同意フロー
+    // EU/EEA 圏のユーザーにのみ同意画面を表示し、それ以外は即通過する
+    // ※ 3.x系はplay-services-ads:23.3.0との相性問題が報告されているため2.2.0を使用
+    implementation("com.google.android.ump:user-messaging-platform:2.2.0")
 }

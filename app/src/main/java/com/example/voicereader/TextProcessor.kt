@@ -17,19 +17,17 @@ object TextProcessor {
         val hasCjk = text.any { it in '\u4E00'..'\u9FFF' || it in '\u3400'..'\u4DBF' }
         if (hasCjk) return Locale.CHINA
 
-        // ③ ドイツ語特有文字（ウムラウト・エスツェット）
-        val hasGerman = text.any { it in "äöüßÄÖÜ" }
-        // ④ フランス語特有文字（アクサン・セディユ等）またはアポストロフィパターン
-        val hasFrench = text.any { it in "àâçèéêëîïôùûœæÀÂÇÈÉÊËÎÏÔÙÛŒÆ" } ||
-                        Regex("\\b[ld]'", RegexOption.IGNORE_CASE).containsMatchIn(text)
-
-        if (hasGerman && !hasFrench) return Locale.GERMANY
-        if (hasFrench && !hasGerman) return Locale.FRANCE
-
-        // ⑤ ストップワード多数決（EN/DE/FR それぞれのよく使う単語を点数化）
+        // ③ ストップワード多数決を最優先（EN/DE/FR それぞれのよく使う単語を点数化）
+        // ★修正理由：固有名詞の é（Évora, café等）でフランス語誤判定を防ぐため
+        //             英語テキストなら "the","and" 等が多数ヒットするので特殊文字より優先すべき
         val lower = text.lowercase()
         var scoreEn = 0; var scoreDe = 0; var scoreFr = 0
-        listOf("the","is","are","and","that","this","with","for","not","from","have").forEach {
+        // ★英語の超頻出単語を幅広く登録（"was","a","of" 等を追加）
+        // 理由：Auto-da-fé, Évora など固有名詞含む文に "the","is" が無くても
+        //      "was","a","of","in" 等でスコアが立ち、フランス語誤判定を防ぐ
+        listOf("the","is","are","and","that","this","with","for","not","from","have",
+               "was","were","had","has","been","it","of","in","a","an","at","by",
+               "or","but","be","all","more","than","their","they","he","she","we").forEach {
             if (Regex("\\b$it\\b").containsMatchIn(lower)) scoreEn++
         }
         listOf("der","die","das","und","ist","nicht","mit","für","von","ein","eine","wird").forEach {
@@ -48,7 +46,15 @@ object TextProcessor {
             }
         }
 
-        // ⑥ 何も判定できなければ fallback にフォールバック
+        // ④ ストップワードが0点のとき（固有名詞だけのテキスト等）のみ特殊文字で判定
+        val hasGerman = text.any { it in "äöüßÄÖÜ" }
+        val hasFrench = text.any { it in "àâçèéêëîïôùûœæÀÂÇÈÉÊËÎÏÔÙÛŒÆ" } ||
+                        Regex("\\b[ld]'", RegexOption.IGNORE_CASE).containsMatchIn(text)
+
+        if (hasGerman && !hasFrench) return Locale.GERMANY
+        if (hasFrench && !hasGerman) return Locale.FRANCE
+
+        // ⑤ 何も判定できなければ fallback にフォールバック
         return fallback
     }
     // PDF専用の改行処理

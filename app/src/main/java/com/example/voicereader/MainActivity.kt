@@ -9,6 +9,9 @@ import com.google.android.gms.ads.LoadAdError
 import com.google.android.gms.ads.MobileAds
 import com.google.android.gms.ads.interstitial.InterstitialAd
 import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
+import com.google.android.ump.ConsentInformation
+import com.google.android.ump.ConsentRequestParameters
+import com.google.android.ump.UserMessagingPlatform
 import android.content.pm.ActivityInfo
 import android.content.ClipboardManager
 import android.content.ComponentName
@@ -60,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import android.content.res.Configuration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -125,8 +129,9 @@ class MainActivity : ComponentActivity() {
 
     // インタースティシャル広告
     private var interstitialAd: InterstitialAd? = null
-    private var adPlayCount = 0          // 再生終了カウンター
-    private val AD_INTERVAL = 3          // 何回に1回広告を出すか
+    // デバッグビルド時は1分、リリースビルド時は45分で広告を表示
+    private val AD_TIME_THRESHOLD_MS = if (BuildConfig.DEBUG) 1L * 60 * 1000 else 45L * 60 * 1000
+    private var playStartTime = 0L                        // 再生を開始した時刻（ミリ秒）
 
     // 権限リクエスト
     private val requestPermissionLauncher = registerForActivityResult(
@@ -156,9 +161,29 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // AdMob 初期化（広告ロードより前に必須）
-        MobileAds.initialize(this)
-        loadInterstitialAd()
+        // UMP → AdMob の順に初期化（GDPR対応。EU圏ユーザーには同意画面を表示）
+        // EU圏以外（日本など）は即スルーしてAdMobが初期化される
+        val consentInformation = UserMessagingPlatform.getConsentInformation(this)
+
+        val params = ConsentRequestParameters.Builder().build()
+
+        consentInformation.requestConsentInfoUpdate(this, params,
+            {
+                // 同意情報の更新に成功 → フォームが必要なら表示（EU圏のみ）
+                UserMessagingPlatform.loadAndShowConsentFormIfRequired(this) { _ ->
+                    // フォーム完了（または不要）→ 広告を出せる状態か確認してAdMob初期化
+                    if (consentInformation.canRequestAds()) {
+                        initMobileAds()
+                    }
+                }
+            },
+            { _ ->
+                // 更新失敗（オフライン等）→ キャッシュ済み同意状態で判断
+                if (consentInformation.canRequestAds()) {
+                    initMobileAds()
+                }
+            }
+        )
 
         // PDFBox初期化
         try {
@@ -183,25 +208,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // 言語コード文字列 → Locale 変換ヘルパー
-    fun ttsLangToLocale(lang: String): java.util.Locale = when (lang) {
-        "JA" -> java.util.Locale.JAPAN
-        "EN" -> java.util.Locale.US
-        "DE" -> java.util.Locale.GERMANY
-        "FR" -> java.util.Locale.FRANCE
-        "ZH" -> java.util.Locale.CHINA
-        else -> java.util.Locale.US
-    }
-
-    // Locale → 言語コード文字列 変換ヘルパー（TextProcessor.detectLanguage の戻り値をUIに変換）
-    fun localeToTtsLang(locale: java.util.Locale): String = when (locale) {
-        java.util.Locale.JAPAN  -> "JA"
-        java.util.Locale.US     -> "EN"
-        java.util.Locale.GERMANY -> "DE"
-        java.util.Locale.FRANCE -> "FR"
-        java.util.Locale.CHINA  -> "ZH"
-        else                    -> "EN"
-    }
 
     @Composable
     fun AppNavigation() {
@@ -230,6 +236,17 @@ class MainActivity : ComponentActivity() {
         // テキスト処理中フラグ（巨大ファイルの場合、処理に数秒かかるためUI側でローディング表示に使う）
         var isTextProcessing by remember { mutableStateOf(false) }
 
+        // 初回起動同意ダイアログ：未同意なら true（ダイアログ表示）、同意済みなら false（スルー）
+        val ttsPrefs = remember { context.getSharedPreferences("tts_prefs", Context.MODE_PRIVATE) }
+        var showConsentDialog by remember {
+            mutableStateOf(!ttsPrefs.getBoolean("first_launch_agreed", false))
+        }
+
+        // デフォルトプロンプトのバージョン番号
+        // ★デフォルト内容を変えたらこの数値を +1 すること
+        // 理由：バージョンアップ・バックアップ復元後も [Example] プロンプトを最新に保つため
+        val PROMPT_DEFAULTS_VERSION = 2
+
         // データ読み込み関数
         // count=0 のとき無条件でデフォルトプロンプトを登録する（初回起動・既存ユーザー両対応）
         // ※ユーザーが意図的に全プロンプト削除した場合もデフォルトが復元される仕様（初心者向け）
@@ -239,35 +256,55 @@ class MainActivity : ComponentActivity() {
             if (count == 0) {
                 // プロンプトが0件 → デフォルトを登録
                 val jpContent =
-                    "以下の文章を、理解力のある高校生を対象に解説してください。\n\n" +
-                    "① 背景・歴史的経緯を補足し、内容を元の約3倍に拡充してください。\n" +
-                    "② 過去の失敗事例や試行錯誤があれば触れてください。\n" +
-                    "③ 批判的・懐疑的な視点も提示し、リスクや限界・争点にも言及してください。\n" +
-                    "④ 専門用語は【用語】として明示し、その場でわかりやすく解説してください。\n" +
-                    "⑤ 断言できない点は「かもしれません」など慎重な表現を使い、率直に表明してください。\n" +
-                    "⑥ 一方的な説明ではなく、AIと人間が一緒に理解に挑戦している雰囲気で書いてください。\n\n" +
-                    "形式：導入→背景→批判的視点→基礎知識→まとめ の流れで最低7段落。" +
-                    "ところどころに問いかけを入れ、読み手が考えられるようにしてください。"
+                    "「○○」の最新動向を、以下の構成で教えてください。\n\n" +
+                    "【対象知識レベル】その分野について何も知らない大人\n" +
+                    "（専門用語を使う場合は必ず平易な言葉で言い換えること）\n\n" +
+                    "【出力構成】\n" +
+                    "1. 30秒サマリー（3行以内）\n" +
+                    "2. 言葉の背景\n" +
+                    "   - この言葉はいつ、どんな文脈で生まれたか\n" +
+                    "   - 類似する概念・言葉との違い\n" +
+                    "   - 対になる概念・言葉があれば併記\n" +
+                    "3. 主要な動向（時期付きで箇条書き）\n" +
+                    "4. 不確かな点・議論中の点\n" +
+                    "5. さらに調べるなら：推奨キーワード 2〜3個\n\n" +
+                    "【品質ルール】\n" +
+                    "- 学術資料など良質で信頼性の高い資料を使用する\n" +
+                    "- 事実と推測を明確に区別する\n" +
+                    "- 情報の時期・出典を可能な範囲で示す\n" +
+                    "- 「〜と言われている」だけでなく根拠を示す\n" +
+                    "- 知識カットオフより後の可能性があれば必ず明記する\n" +
+                    "- わからないことは「わからない」と言う。ハルシネーションより正直さを優先する"
 
                 val enContent =
-                    "Please read the following text and provide a structured summary at roughly half the original length.\n\n" +
-                    "Format:\n" +
-                    "1. Overview: 2 to 3 sentences on the core message\n" +
-                    "2. Key Points: up to 5 of the most important facts\n" +
-                    "3. Background: brief historical or contextual information\n" +
-                    "4. Critical Perspective: limitations, risks, or counterarguments\n" +
-                    "5. Glossary: define technical terms as Term: definition\n\n" +
-                    "Guidelines:\n" +
-                    "- Write in clear, simple English for a general audience\n" +
-                    "- Avoid symbols like asterisks and hashtags; write in plain sentences\n" +
-                    "- If any information is unclear or uncertain, say so explicitly"
+                    "Please explain the latest developments around \"[TOPIC]\" using the structure below.\n\n" +
+                    "[Target level] An adult with no prior knowledge of the field\n" +
+                    "(Always rephrase technical terms in plain language)\n\n" +
+                    "[Structure]\n" +
+                    "1. 30-second summary (3 lines max)\n" +
+                    "2. Background of the term\n" +
+                    "   - When and in what context did this term originate?\n" +
+                    "   - How does it differ from similar concepts or terms?\n" +
+                    "   - Include any opposing concepts if applicable\n" +
+                    "3. Key developments (bulleted, with dates where possible)\n" +
+                    "4. Uncertain or debated points\n" +
+                    "5. If you want to dig deeper: 2-3 recommended search keywords\n\n" +
+                    "[Quality rules]\n" +
+                    "- Draw from high-quality, reliable sources such as academic literature\n" +
+                    "- Clearly distinguish facts from assumptions\n" +
+                    "- Cite the time period and source of information where possible\n" +
+                    "- Provide evidence, not just \"it is said that...\"\n" +
+                    "- If the topic may have developed beyond your knowledge cutoff, say so explicitly\n" +
+                    "- Say \"I don't know\" when you don't. Prioritize honesty over hallucination"
 
                 val defaults = listOf(
-                    PromptItem("深掘り解説（JA）", jpContent),
-                    PromptItem("Structured Summary (EN)", enContent),
+                    PromptItem("[Example] 初心者に向けた詳細な用語解説（JA）", jpContent),
+                    PromptItem("[Example] Beginner-Friendly Term Explainer (EN)", enContent),
                 )
                 val editor = prefs.edit()
                 editor.putInt("prompt_count", defaults.size)
+                // ★バージョンも同時に保存（次回起動時の不要な差し替えを防ぐ）
+                editor.putInt("prompt_defaults_version", PROMPT_DEFAULTS_VERSION)
                 defaults.forEachIndexed { i, item ->
                     editor.putString("prompt_title_$i", item.title)
                     editor.putString("prompt_content_$i", item.content)
@@ -283,6 +320,70 @@ class MainActivity : ComponentActivity() {
                 val content = prefs.getString("prompt_content_$i", "") ?: ""
                 list.add(PromptItem(title, content))
             }
+
+            // ★デフォルトプロンプトのバージョンチェック
+            // バージョンアップ時・バックアップ復元時に [Example] プロンプトを最新に差し替える
+            val savedDefaultsVersion = prefs.getInt("prompt_defaults_version", 0)
+            if (savedDefaultsVersion < PROMPT_DEFAULTS_VERSION) {
+                // [Example] タイトルのプロンプトだけ削除し、新しいデフォルトを先頭に追加
+                val userPrompts = list.filter { !it.title.startsWith("[Example]") }
+                val jpContent =
+                    "「○○」の最新動向を、以下の構成で教えてください。\n\n" +
+                    "【対象知識レベル】その分野について何も知らない大人\n" +
+                    "（専門用語を使う場合は必ず平易な言葉で言い換えること）\n\n" +
+                    "【出力構成】\n" +
+                    "1. 30秒サマリー（3行以内）\n" +
+                    "2. 言葉の背景\n" +
+                    "   - この言葉はいつ、どんな文脈で生まれたか\n" +
+                    "   - 類似する概念・言葉との違い\n" +
+                    "   - 対になる概念・言葉があれば併記\n" +
+                    "3. 主要な動向（時期付きで箇条書き）\n" +
+                    "4. 不確かな点・議論中の点\n" +
+                    "5. さらに調べるなら：推奨キーワード 2〜3個\n\n" +
+                    "【品質ルール】\n" +
+                    "- 学術資料など良質で信頼性の高い資料を使用する\n" +
+                    "- 事実と推測を明確に区別する\n" +
+                    "- 情報の時期・出典を可能な範囲で示す\n" +
+                    "- 「〜と言われている」だけでなく根拠を示す\n" +
+                    "- 知識カットオフより後の可能性があれば必ず明記する\n" +
+                    "- わからないことは「わからない」と言う。ハルシネーションより正直さを優先する"
+                val enContent =
+                    "Please explain the latest developments around \"[TOPIC]\" using the structure below.\n\n" +
+                    "[Target level] An adult with no prior knowledge of the field\n" +
+                    "(Always rephrase technical terms in plain language)\n\n" +
+                    "[Structure]\n" +
+                    "1. 30-second summary (3 lines max)\n" +
+                    "2. Background of the term\n" +
+                    "   - When and in what context did this term originate?\n" +
+                    "   - How does it differ from similar concepts or terms?\n" +
+                    "   - Include any opposing concepts if applicable\n" +
+                    "3. Key developments (bulleted, with dates where possible)\n" +
+                    "4. Uncertain or debated points\n" +
+                    "5. If you want to dig deeper: 2-3 recommended search keywords\n\n" +
+                    "[Quality rules]\n" +
+                    "- Draw from high-quality, reliable sources such as academic literature\n" +
+                    "- Clearly distinguish facts from assumptions\n" +
+                    "- Cite the time period and source of information where possible\n" +
+                    "- Provide evidence, not just \"it is said that...\"\n" +
+                    "- If the topic may have developed beyond your knowledge cutoff, say so explicitly\n" +
+                    "- Say \"I don't know\" when you don't. Prioritize honesty over hallucination"
+                val newDefaults = listOf(
+                    PromptItem("[Example] 初心者に向けた詳細な用語解説（JA）", jpContent),
+                    PromptItem("[Example] Beginner-Friendly Term Explainer (EN)", enContent),
+                )
+                val updated = (newDefaults + userPrompts).toMutableList()
+                // SharedPreferences に書き直す
+                val editor = prefs.edit()
+                editor.putInt("prompt_count", updated.size)
+                editor.putInt("prompt_defaults_version", PROMPT_DEFAULTS_VERSION)
+                updated.forEachIndexed { i, item ->
+                    editor.putString("prompt_title_$i", item.title)
+                    editor.putString("prompt_content_$i", item.content)
+                }
+                editor.apply()
+                return updated
+            }
+
             return list
         }
 
@@ -535,6 +636,17 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+
+        // 初回起動同意ダイアログ（AnimatedContent の上に重なる形で表示）
+        // 同意ボタンを押すまで消えない → アプリの利用規約を確認したことを担保する
+        if (showConsentDialog) {
+            FirstLaunchConsentDialog(
+                onAgree = {
+                    ttsPrefs.edit().putBoolean("first_launch_agreed", true).apply()
+                    showConsentDialog = false
+                }
+            )
         }
     }
 
@@ -924,7 +1036,6 @@ class MainActivity : ComponentActivity() {
         var pitch by remember { mutableFloatStateOf(ttsPrefs.getFloat("pitch", 1.0f)) }
         // 言語設定：テキスト変更時に全体を自動判定し初期値を決める。ユーザーが手動で上書き可能
         // "JA"/"EN"/"DE"/"FR"/"ZH" の5種類を順番にトグルできる
-        var ttsLang by remember { mutableStateOf("JA") }
         // 前回セッションで保存された読み位置（sentences が読み込まれたら一度だけ復元）
         val savedSessionIndex = remember { ttsPrefs.getInt("lastSentenceIndex", 0) }
         var hasRestoredSession by remember { mutableStateOf(false) }
@@ -956,6 +1067,7 @@ class MainActivity : ComponentActivity() {
         // ★非対応ファイル形式ダイアログ用：タップされたファイルのURIを保持
         var unsupportedFileUri by remember { mutableStateOf<Uri?>(null) }
 
+
         // ★textが変更されたら編集用テキストも更新、かつ言語を全体で自動判定
         LaunchedEffect(text) {
             if (!isEditMode) {
@@ -963,10 +1075,7 @@ class MainActivity : ComponentActivity() {
             }
             if (text.isNotEmpty()) {
                 // ドキュメント全体の特徴から基底言語を推定する（センテンス判定のフォールバック用）
-                // TextProcessor.detectLanguage に委譲（TtsServiceと同じロジックを共有）
-                val detectedLocale = TextProcessor.detectLanguage(text)
-                ttsLang = localeToTtsLang(detectedLocale)
-                ttsService?.setBaseLanguage(ttsLangToLocale(ttsLang))
+                ttsService?.setBaseLanguage(TextProcessor.detectLanguage(text))
             }
         }
 
@@ -1107,6 +1216,7 @@ class MainActivity : ComponentActivity() {
 
         val listState = rememberLazyListState()
         val activity = context as? MainActivity
+        val density = LocalDensity.current  // dp→px変換用（LaunchedEffect内で使う）
 
         // ★非対応ファイル形式ダイアログ
         unsupportedFileUri?.let { fileUri ->
@@ -1169,18 +1279,12 @@ class MainActivity : ComponentActivity() {
 
         val scope = rememberCoroutineScope()
 
-        // ★編集モード中だけ縦固定。isEditModeが変わるたびに再実行される
-        // DisposableEffect(key)：keyが変わるたびにonDisposeで後片付け→再実行される仕組み
-        // ファイルピッカーを開くのは再生モード（isEditMode=false）なので横向きのまま使える
-        DisposableEffect(isEditMode) {
-            if (isEditMode) {
-                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            }
+        // ★MainScreen を常時縦固定（コードベースのportraitロック。Manifest設定との挙動差を確認するテスト）
+        // 他の画面と同じDisposableEffect(Unit)方式で統一。画面を離れたら自動解除
+        DisposableEffect(Unit) {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             onDispose {
-                // 編集モードを抜けるとき（保存・キャンセル・バックジェスチャー）に解除
-                if (isEditMode) {
-                    activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                }
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             }
         }
 
@@ -1195,39 +1299,18 @@ class MainActivity : ComponentActivity() {
             if (currentSentenceIndex >= 0 && currentSentenceIndex < sentences.size) {
                 // LazyColumnの描画完了を待ってからスクロール実行
                 kotlinx.coroutines.delay(100)
-                // 現在画面に見えているアイテム数を取得し、中央より1つ上に表示
-                // （ボトムシート展開時にハイライトが隠れないよう、やや上寄りにする）
-                val visibleCount = listState.layoutInfo.visibleItemsInfo.size
-                val targetIndex = maxOf(0, currentSentenceIndex - visibleCount / 2 + 2)
-                listState.animateScrollToItem(targetIndex)
-            }
-        }
-
-        // Intent処理
-        LaunchedEffect(Unit) {
-            activity?.intent?.let { intent ->
-                if (intent.action == Intent.ACTION_SEND && intent.type == "text/plain") {
-                    intent.getStringExtra(Intent.EXTRA_TEXT)?.let { sharedText ->
-                        val urlRegex = Regex("https?://[\\w!?/+\\-_~=;.,*&@#$%()\'\\[\\]]+")
-                        val match = urlRegex.find(sharedText)
-
-                        if (match != null) {
-                            val url = match.value
-                            scope.launch(Dispatchers.IO) {
-                                try {
-                                    val doc = Jsoup.connect(url).userAgent("Mozilla/5.0").timeout(10000).get()
-                                    val bodyText = doc.body().text()
-                                    withContext(Dispatchers.Main) { onUpdateText(bodyText, false) }
-                                } catch (e: Exception) {
-                                    withContext(Dispatchers.Main) { onUpdateText("エラー: ${e.message}", false) }
-                                }
-                            }
-                        } else {
-                            onUpdateText(sharedText, false)
-                        }
-                        activity.intent.removeExtra(Intent.EXTRA_TEXT)
-                    }
+                // ハイライト中のセンテンスを上端に表示しつつ、
+                // 前のセンテンスの末尾を80dp分だけ上に見せて「読んでいた場所の錨」を作る
+                // currentSentenceIndex == 0 のときは余白なし（上に何もない）
+                val offsetPx = if (currentSentenceIndex > 0) {
+                    with(density) { -80.dp.roundToPx() }
+                } else {
+                    0
                 }
+                listState.animateScrollToItem(
+                    index = currentSentenceIndex,
+                    scrollOffset = offsetPx
+                )
             }
         }
 
@@ -1323,6 +1406,7 @@ class MainActivity : ComponentActivity() {
                 // TTSが実際に音を出し始めた瞬間（再生ボタンタップから数秒後）
                 override fun onStarted() {
                     isTtsStarting = false  // 起動中スピナーを消す
+                    activity?.recordPlayStart()  // 再生時間の計測を開始
                 }
                 override fun onComplete() {
                     isPlaying = false
@@ -1515,6 +1599,7 @@ class MainActivity : ComponentActivity() {
                                             if (isTextProcessing) return@clickable // 処理中はタップ無効
                                             if (isPlaying) {
                                                 ttsService?.stop(); isPlaying = false; isTtsStarting = false
+                                                activity?.showInterstitialAdIfReady()  // 停止時に再生時間をチェック
                                             } else {
                                                 if (sentences.isNotEmpty()) {
                                                     val s = if (currentSentenceIndex in sentences.indices) currentSentenceIndex else 0
@@ -1674,41 +1759,9 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.width(36.dp), textAlign = TextAlign.End)
                                 }
                                 Spacer(modifier = Modifier.height(15.dp))  // ★20→15dp
-                                // 5つのアクションボタン（Lang + Paste + Files + Prompts + Dict.）
+                                // 4つのアクションボタン（Paste + Files + Prompts + Dict.）
                                 Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    // Lang ボタン：タップのたびに JA→EN→DE→FR→ZH→JA の順に切り替え
-                                    val langCycle = listOf("JA", "EN", "DE", "FR", "ZH")
-                                    val langSrc = remember { MutableInteractionSource() }
-                                    val langPressed by langSrc.collectIsPressedAsState()
-                                    val langScale by animateFloatAsState(if (langPressed) 0.88f else 1f, tween(80), label = "langBtn")
-                                    Column(modifier = Modifier.weight(1f)
-                                        .clickable(interactionSource = langSrc, indication = null) {
-                                            val next = (langCycle.indexOf(ttsLang) + 1) % langCycle.size
-                                            ttsLang = langCycle[next]
-                                            val locale = ttsLangToLocale(ttsLang)
-                                            ttsService?.setBaseLanguage(locale)
-                                            // 選んだ言語の音声パックが未インストールならすぐToastで知らせる
-                                            if (ttsService?.isVoiceAvailable(locale) == false) {
-                                                val langName = locale.getDisplayLanguage(java.util.Locale.ENGLISH)
-                                                Toast.makeText(context,
-                                                    "\"$langName\" voice pack not installed.\nSettings → Text-to-speech → Install voice data",
-                                                    Toast.LENGTH_LONG).show()
-                                            }
-                                        },
-                                        horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Box(modifier = Modifier.size(56.dp)
-                                            .scale(langScale)
-                                            .shadow(4.dp, RoundedCornerShape(16.dp))
-                                            .background(paperColor, RoundedCornerShape(16.dp)),
-                                            contentAlignment = Alignment.Center) {
-                                            // アイコンの代わりに言語コードをボタン内に大きく表示
-                                            Text(ttsLang, fontSize = 16.sp,
-                                                fontWeight = FontWeight.ExtraBold, color = primaryColor)
-                                        }
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text("Lang", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textMuted)
-                                    }
                                     listOf(
                                         Triple(Icons.Default.ContentPaste, "Paste",
                                             if (isDark) Color(0xFFFF2E97) else Color(0xFFEC4899)),
@@ -1775,7 +1828,7 @@ class MainActivity : ComponentActivity() {
                         }
                     ) { innerPadding ->
                         Box(modifier = Modifier.fillMaxSize().padding(innerPadding).padding(horizontal = 16.dp)) {
-                            // ファイル読み込み中オーバーレイ
+                            // ファイル読み込み中 / テキスト処理中 オーバーレイ
                             if (isLoadingFile || isTextProcessing) {
                                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally,
@@ -1788,7 +1841,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             } else if (text.isEmpty()) {
-                                Text("Copy a prompt with the Prompts button,\nthen paste the Perplexity result here.",
+                                Text("Tap Paste to add text, or use the file button\nto open a PDF, Word, or text file.",
                                     modifier = Modifier.padding(16.dp), color = textMuted,
                                     fontSize = fontSize.sp, lineHeight = (fontSize * 1.6f).sp)
                             } else {
@@ -1946,10 +1999,12 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(prompt.title, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = textPrimary)
+                                Text(prompt.title, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = textPrimary,
+                                    maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                                 Text(
-                                    text = if (prompt.content.length > 40) prompt.content.take(40) + "..." else prompt.content,
-                                    fontSize = 12.sp, color = textMuted
+                                    text = prompt.content,
+                                    fontSize = 12.sp, color = textMuted,
+                                    maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                 )
                             }
                             Spacer(modifier = Modifier.width(8.dp))
@@ -2022,8 +2077,12 @@ class MainActivity : ComponentActivity() {
             document.close()
             inputStream?.close()
 
+            // ★NFKC正規化：PDFの特殊エンコーディング文字を標準Unicode文字に統一
+            // （これがないと辞書の「粒子」と抽出された「粒子」が内部コード上別物になる）
+            val normalized = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC)
+
             // ★TextProcessorを使って改行を整形
-            TextProcessor.cleanPdfText(text)
+            TextProcessor.cleanPdfText(normalized)
         } catch (e: Exception) {
             e.printStackTrace()
             ""
@@ -2116,6 +2175,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // AdMob を初期化して広告をロードする
+    // UMP の同意フローが完了してから呼ぶ（直接呼び出し禁止）
+    private fun initMobileAds() {
+        MobileAds.initialize(this)
+        loadInterstitialAd()
+    }
+
     // 広告を事前ロードする（表示の直前ではなく、起動時・表示後に呼んで常に準備しておく）
     private fun loadInterstitialAd() {
         InterstitialAd.load(
@@ -2133,12 +2199,47 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    // 再生終了時に呼ぶ：3回に1回広告を表示し、表示後に次回分を事前ロード
+    // 再生が実際に始まった瞬間に呼ぶ：タイマースタート
+    // onStarted()はセンテンスごとに呼ばれるため、計測中（playStartTime != 0）は上書きしない
+    fun recordPlayStart() {
+        if (playStartTime == 0L) {
+            playStartTime = System.currentTimeMillis()
+            Log.d("AdDebug", "▶ recordPlayStart: タイマースタート")
+        }
+    }
+
+    // 再生停止時に呼ぶ：累計再生時間を計算し、45分超えたら広告を表示
     // runOnUiThread：TTS コールバックはバックグラウンドスレッドなので必ずメインスレッドに戻す
     fun showInterstitialAdIfReady() {
-        adPlayCount++
-        if (adPlayCount < AD_INTERVAL) return
-        adPlayCount = 0
+        Log.d("AdDebug", "⏹ showInterstitialAdIfReady: 呼ばれた / playStartTime=$playStartTime")
+        // 再生していなかった（playStartTime未設定）なら何もしない
+        if (playStartTime == 0L) {
+            Log.d("AdDebug", "⏹ playStartTime=0 のためスキップ")
+            return
+        }
+
+        // 今回の再生時間を累計に加算
+        val elapsed = System.currentTimeMillis() - playStartTime
+        playStartTime = 0L  // タイマーをリセット
+
+        // ttsPrefsはComposable内のローカル変数のため、ここでは直接取得する
+        val adPrefs = getSharedPreferences("tts_prefs", Context.MODE_PRIVATE)
+        val prev = adPrefs.getLong("accumulatedPlayMs", 0L)
+        val total = prev + elapsed
+        Log.d("AdDebug", "⏹ elapsed=${elapsed/1000}秒 / prev=${prev/1000}秒 / total=${total/1000}秒 / 閾値=${AD_TIME_THRESHOLD_MS/1000}秒")
+
+        if (total < AD_TIME_THRESHOLD_MS) {
+            // まだ45分未満 → 累計を保存して今回は広告なし（翌日に持ち越し）
+            adPrefs.edit().putLong("accumulatedPlayMs", total).apply()
+            Log.d("AdDebug", "⏹ 閾値未達のためスキップ・累計を保存")
+            return
+        }
+
+        // 45分以上 → 累計リセットして広告を表示
+        adPrefs.edit().putLong("accumulatedPlayMs", 0L).apply()
+
+        // 広告表示前にTTSを確実に停止（バッファ残りの音声を防ぐ）
+        ttsService?.stop()
 
         runOnUiThread {
             val ad = interstitialAd

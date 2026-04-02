@@ -32,3 +32,13 @@
 # 名前変更・削除されると動作しなくなる
 # ---------------------------------------------------------------
 -keep class com.example.voicereader.** { *; }
+
+# ---------------------------------------------------------------
+# WorkManager（AdMobがSDK内部で使用）
+# R8がクラスを削除すると「Failed to create an instance of
+# androidx.work.impl.WorkDatabase」でクラッシュする
+# ---------------------------------------------------------------
+-keep class androidx.work.** { *; }
+-keep class androidx.work.impl.WorkDatabase
+-keep class androidx.work.impl.WorkDatabase_Impl
+-dontwarn androidx.work.**
