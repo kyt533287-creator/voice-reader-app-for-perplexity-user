@@ -491,7 +491,7 @@ class MainActivity : ComponentActivity() {
                 withContext(Dispatchers.IO) {
                     sessionFile.writeText(cleanedText)
                 }
-                // 新しいテキストに切り替わったので、読み位置をリセット
+                // 次回起動時の復元位置もリセット
                 context.getSharedPreferences("tts_prefs", Context.MODE_PRIVATE)
                     .edit().putInt("lastSentenceIndex", 0).apply()
             }
@@ -1346,6 +1346,9 @@ class MainActivity : ComponentActivity() {
                     withContext(Dispatchers.Main) {
                         isLoadingFile = false  // ファイル読み込み完了
                         if (text.isNotEmpty()) {
+                            // 新しいファイルに切り替えるので再生を止めてリセット
+                            if (isPlaying) { ttsService?.stop(); isPlaying = false }
+                            currentSentenceIndex = 0
                             onUpdateText(text, false)
                         } else if (mimeType.contains("pdf")) {
                             // PDF読み込み失敗（画像だけのPDF・パスワード付き等）
@@ -1434,6 +1437,19 @@ class MainActivity : ComponentActivity() {
         val isKeyboardVisible = WindowInsets.isImeVisible
         // ★横向き判定（シートのpeek高さ調整に使用）
         val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+        // ★peekHeightをテキスト有無で切り替え（ユーザー仕様）
+        // テキストなし：Transport(92) + SPEED(48) + Spacer(6) + PITCH(48) + DragHandle(30) = 224dp
+        //               → PICHを見せる。オーバーレイ不要
+        // テキストあり：Transport(92) + SPEED(48) + Progress(54) + DragHandle(30) + overlay補正(35) = 259dp≈260dp
+        //               → Progressを見せてPITCHを隠す。オーバーレイで蓋をする
+        // どちらもナビゲーションバー分を加算（3ボタンナビ端末対策）
+        val navBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val hasSentences = sentences.size > 1
+        val peekHeight = when {
+            isLandscape  -> 125.dp
+            hasSentences -> 260.dp + navBarPadding  // Progress表示・PITCH隠す
+            else         -> 224.dp + navBarPadding  // PITCH表示・オーバーレイなし
+        }
         // ★BottomSheetScaffoldの状態（編集モード中も常に保持するためif-elseの外で定義）
         val scaffoldState = rememberBottomSheetScaffoldState()
 
@@ -1511,7 +1527,7 @@ class MainActivity : ComponentActivity() {
                     BottomSheetScaffold(
                         modifier             = Modifier.fillMaxSize(),
                         scaffoldState        = scaffoldState,
-                        sheetPeekHeight      = if (isLandscape) 125.dp else 260.dp,  // ★縦260dp（224+35=ADオーバーレイ分を加算。実質見える量224dp：Transport+SPEED+Progress）横125dp（Transportのみ）
+                        sheetPeekHeight      = peekHeight,  // ★画面高さの35%（最大260dp）で小画面端末でも切れない
                         sheetContainerColor  = paperColor,
                         sheetShadowElevation = 16.dp,
                         containerColor       = bgColor,
@@ -1782,7 +1798,7 @@ class MainActivity : ComponentActivity() {
                                                     when (idx) {
                                                         0 -> { val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                                             val cd = cb.primaryClip
-                                                            if (cd != null && cd.itemCount > 0) onUpdateText(cd.getItemAt(0).text.toString(), false) }
+                                                            if (cd != null && cd.itemCount > 0) { if (isPlaying) { ttsService?.stop(); isPlaying = false }; currentSentenceIndex = 0; onUpdateText(cd.getItemAt(0).text.toString(), false) } }
                                                         1 -> docPickerLauncher.launch(arrayOf("application/pdf",
                                                             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                                             "application/vnd.google-apps.document", "text/html", "text/plain"))
@@ -1874,11 +1890,16 @@ class MainActivity : ComponentActivity() {
                 // ★ADオーバーレイ：Scaffoldの後に描画することで最上レイヤーになる
                 // 非ポップアップ時にSPEEDバー以下（Track・PITCH等）を視覚的に隠すバリア
                 // 編集モード・キーボード表示中は不要なので非表示
-                if (!isEditMode && !isKeyboardVisible) {
+                // ★navigationBarsPadding()を追加：3ボタンナビゲーション搭載端末（AQUOS等）で
+                //   ナビゲーションバーの裏にオーバーレイが潜り込んでピッチバーが透けるバグを修正
+                // ★オーバーレイはテキストあり（Progress表示）のときだけ出す
+                // テキストなし時はPITCHを見せたいので表示しない
+                if (!isEditMode && !isKeyboardVisible && hasSentences) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
+                            .navigationBarsPadding()
                             .height(35.dp)
                             .background(bgColor)
                     )
