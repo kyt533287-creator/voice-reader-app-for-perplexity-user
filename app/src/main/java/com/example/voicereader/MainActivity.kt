@@ -98,6 +98,8 @@ import androidx.compose.ui.draw.shadow                     // クレイシャド
 import androidx.compose.material3.SheetValue               // ★ボトムシートの展開状態判定用
 import androidx.compose.foundation.interaction.MutableInteractionSource  // ★タップエフェクト（リップル）除去用
 import androidx.compose.foundation.interaction.collectIsPressedAsState   // ★ボタン押下状態の検知用
+import androidx.compose.ui.layout.onGloballyPositioned     // 描画後の実サイズ・位置を取得
+import androidx.compose.ui.layout.boundsInParent            // 親要素内での座標取得
 import androidx.compose.ui.text.TextStyle                  // テキストフィールドのスタイル
 import androidx.compose.ui.text.style.TextAlign            // テキスト右寄せ等
 import com.example.voicereader.BuildConfig
@@ -1437,18 +1439,19 @@ class MainActivity : ComponentActivity() {
         val isKeyboardVisible = WindowInsets.isImeVisible
         // ★横向き判定（シートのpeek高さ調整に使用）
         val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-        // ★peekHeightをテキスト有無で切り替え（ユーザー仕様）
-        // テキストなし：Transport(92) + SPEED(48) + Spacer(6) + PITCH(48) + DragHandle(30) = 224dp
-        //               → PICHを見せる。オーバーレイ不要
-        // テキストあり：Transport(92) + SPEED(48) + Progress(54) + DragHandle(30) + overlay補正(35) = 259dp≈260dp
-        //               → Progressを見せてPITCHを隠す。オーバーレイで蓋をする
-        // どちらもナビゲーションバー分を加算（3ボタンナビ端末対策）
-        val navBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        // ★peekHeight：折りたたみ時に見せたいコンテンツの実際の高さをリアルタイムで測る
+        // 固定dp値を使わず onGloballyPositioned で測定するため、どの画面サイズでも正確に合う
+        // ★navBarPaddingは加算しない：BottomSheetScaffold(Material3)がナビバーインセットを
+        //   自動処理するため、自分で加算すると二重になり3ボタンナビ端末でpeekHeightが大きくなりすぎる
         val hasSentences = sentences.size > 1
+        // 折りたたみコンテンツの実測高さ（px → dp変換）。初期値は従来値で表示崩れを防ぐ
+        var collapsedContentHeightDp by remember { mutableStateOf(if (hasSentences) 225.dp else 218.dp) }
         val peekHeight = when {
             isLandscape  -> 125.dp
-            hasSentences -> 260.dp + navBarPadding  // Progress表示・PITCH隠す
-            else         -> 224.dp + navBarPadding  // PITCH表示・オーバーレイなし
+            // 実測値(Transport+SPEED+Progress/PITCH) + DragHandle(30dp)
+            // テキストあり時はオーバーレイ(35dp)分も加算してPITCHを隠す
+            hasSentences -> collapsedContentHeightDp + 30.dp  // ← PITCHが見えない高さに設定。オーバーレイはあくまではみ出し防止
+            else         -> collapsedContentHeightDp + 30.dp
         }
         // ★BottomSheetScaffoldの状態（編集モード中も常に保持するためif-elseの外で定義）
         val scaffoldState = rememberBottomSheetScaffoldState()
@@ -1745,6 +1748,21 @@ class MainActivity : ComponentActivity() {
                                             fontSize = 11.sp, color = textMuted.copy(alpha = 0.9f))
                                     }
                                 }
+                                // ★折りたたみコンテンツの底辺にゼロ高さBoxを置いて高さを計測
+                                // boundsInParent().bottom = 親Column上端からこのBoxまでの距離
+                                // = Transport + SPEED + Progress(or PITCH) の合計高さ
+                                // DragHandle(30dp) は Column の外にあるので peekHeight 計算時に加算する
+                                Box(modifier = Modifier
+                                    .fillMaxWidth()
+                                    .onGloballyPositioned { coords ->
+                                        val measured = with(density) {
+                                            coords.boundsInParent().bottom.toDp()
+                                        }
+                                        // ★初回レンダリング時に0が返ることがあるのでガード
+                                        // 50dp未満は「まだ正しく計測できていない」と判断してスキップ
+                                        if (measured > 50.dp) collapsedContentHeightDp = measured
+                                    }
+                                )
                                 // ──── 展開時のみ表示 ────
                                 Spacer(modifier = Modifier.height(6.dp))
                                 // PITCH スライダー
@@ -1899,8 +1917,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .height(35.dp)
+                            .height(16.dp)  // PITCHのthumb(円)上端がはみ出す分だけ隠す最小サイズ
                             .background(bgColor)
                     )
                 }
