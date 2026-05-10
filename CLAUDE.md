@@ -4,6 +4,10 @@
 `tasks/` フォルダ内の **最新日付の `handoff_*.md`** を必ず読んで現在の状況を把握すること。
 不明点があれば、その前の日付のファイルも読むこと。
 
+Obsidianに関する対話・知識探究のセッションの場合は、以下も必ず読むこと：
+`D:\Obsidian\Obsidian_Documents\SYSTEM\Claude_対話指針.md`
+`D:\Obsidian\Obsidian_Documents\THINK\` フォルダ内の最新ノート（存在する場合）
+
 ## 会話の終了時にやること
 セッションを閉じる前に **`tasks/handoff_YYYY-MM-DD.md`**（今日の日付）を新規作成すること。
 内容：このセッションで完成したこと・修正したバグ・次のセッションでやること・現在のブランチ状態。

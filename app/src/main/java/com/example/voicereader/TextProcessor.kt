@@ -83,11 +83,14 @@ object TextProcessor {
     //   applyDictionary     → ユーザー定義の読み替え・削除（内容ノイズ）
     fun cleanPerplexityText(text: String): String {
         return text
+            // 0. Markdownリンク [表示テキスト](URL) を丸ごと削除（引用リンクはすべてこの形式）
+            // 例：[news.yahoo.co](https://...) → 削除。URL部分だけ消すと [news.yahoo.co]( が残り読まれてしまう
+            .replace(Regex("\\[[^\\]]*\\]\\(https?://[^)]*\\)"), "")
             // 1. 引用番号を削除 [12] → 削除
             .replace(Regex("\\[\\d+\\]"), "")
             // 2. アスタリスクをすべて削除（* ** *** 何個でも。箇条書き・強調・太字イタリックに使われる）
             .replace(Regex("\\*+"), "")
-            // 3. URLを削除（http:// または https:// で始まる文字列）
+            // 3. URLを削除（http:// または https:// で始まる文字列）← ステップ0で拾えなかった裸のURLの保険
             .replace(Regex("https?://\\S+"), "")
             // 4. 見出し記号を削除（行頭の # ## ### のみ。#hashtag や URL の # は巻き込まない）
             .replace(Regex("(?m)^#{1,3}\\s*"), "")
@@ -136,6 +139,16 @@ object TextProcessor {
         }
 
         return processedText
+    }
+
+    // ★TTS速度の非線形補正
+    // Android TTSの「3倍速」は実際には約2.36倍にしかならない（実機計測値から導出）
+    // nominal（設定値）→ effectiveSpeed（実効倍率）の変換表：
+    //   1.0x → 1.00x, 2.0x → 1.78x, 3.0x → 2.36x
+    fun effectiveSpeed(nominal: Float): Float = when {
+        nominal <= 1.0f -> nominal
+        nominal <= 2.0f -> 1.0f + (nominal - 1.0f) * 0.78f
+        else            -> 1.78f + (nominal - 2.0f) * 0.58f
     }
 
     // 文分割

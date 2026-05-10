@@ -1015,6 +1015,17 @@ class MainActivity : ComponentActivity() {
         // sentences（辞書適用済み）はTTS読み上げ専用、このリストは画面表示専用
         val displaySentences = remember(text) { TextProcessor.splitSentences(text) }
 
+        // ★センテンスごとの文字/秒レートをキャッシュ（sentences変更時のみ再計算）
+        // CJK（日本語・中国語）= 4.5f（1x実測：24.84秒・112文字 → 112/24.84 ≈ 4.5）
+        // アルファベット言語（英・独・仏）= 15.0f（1x実測：22.28秒・338文字 → 338/22.28 ≈ 15.0）
+        // ※速度の非線形補正は effectiveSpeed() で別途処理するため、ここは純粋な1x実効レート
+        val sentenceRates = remember(sentences) {
+            sentences.map { s ->
+                val lang = TextProcessor.detectLanguage(s).language
+                if (lang == "ja" || lang == "zh") 4.5f else 15.0f
+            }
+        }
+
         // ★isEditMode時のバック確認ダイアログ表示フラグ
         var showUnsavedDialog by remember { mutableStateOf(false) }
         // ★音声パック未インストール警告ダイアログ：不足言語の表示名リストを保持
@@ -1656,10 +1667,15 @@ class MainActivity : ComponentActivity() {
                                 // Track 進捗（ドラッグで位置移動できるスライダー）＋経過/全体時間表示
                                 if (sentences.size > 1) {
                                     // 時間計算（スライダー右端に表示）
-                                    val baseCharsPerSec = 5.0f
-                                    val effectiveRate = (baseCharsPerSec * speechRate).coerceAtLeast(0.1f)
-                                    val totalSecs = (sentences.sumOf { it.length } / effectiveRate).toInt()
-                                    val elapsedSecs = (sentences.take(currentSentenceIndex).sumOf { it.length } / effectiveRate).toInt()
+                                    // センテンスごとに言語別レートを適用して合計する（混在テキスト対応）
+                                    // effectiveSpeed()で速度の非線形補正を適用（3x設定≠3倍速）
+                                    val effSpeed = TextProcessor.effectiveSpeed(speechRate)
+                                    val totalSecs = sentences.indices.sumOf { i ->
+                                        (sentences[i].length / (sentenceRates[i] * effSpeed).coerceAtLeast(0.1f)).toDouble()
+                                    }.toInt()
+                                    val elapsedSecs = (0 until currentSentenceIndex).sumOf { i ->
+                                        (sentences[i].length / (sentenceRates[i] * effSpeed).coerceAtLeast(0.1f)).toDouble()
+                                    }.toInt()
                                     // 60分未満: "53:42"  /  60分以上: "1:32:54"
                                     fun Int.toMmSs() = if (this < 3600)
                                         "%d:%02d".format(this / 60, this % 60)
