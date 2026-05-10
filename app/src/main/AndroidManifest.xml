@@ -23,29 +23,31 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
-        android:label="VoiceReader"
+        android:label="BridgeTTS"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.VoiceReader">
         <!-- アプリのテーマ（見た目） -->
 
+        <!-- AdMob アプリID（build.gradle.kts の manifestPlaceholders から注入） -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="${ADMOB_APP_ID}" />
+
     <!-- ↓ メイン画面（ユーザーが最初に見る画面）の設定 -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
             android:exported="true"
-            android:label="VoiceReader"
+            android:label="BridgeTTS"
             android:theme="@style/Theme.VoiceReader">
 
     <intent-filter>
         <action android:name="android.intent.action.MAIN" />      <!-- メイン画面として設定 -->
         <category android:name="android.intent.category.LAUNCHER" /> <!-- ランチャーに表示 -->
     </intent-filter>
-    <intent-filter>
-        <action android:name="android.intent.action.SEND" />
-        <category android:name="android.intent.category.DEFAULT" />
-        <data android:mimeType="text/plain" />
-    </intent-filter>
+
 </activity>
 
     <!-- ↓ バックグラウンドで音声読み上げを行う「サービス」の設定 -->

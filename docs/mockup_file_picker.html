@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VoiceReader - File Picker Mockup</title>
+  <style>
+    body {
+      background: #e0e0e0;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+      padding: 40px 20px;
+      font-family: Arial, sans-serif;
+      gap: 40px;
+      flex-wrap: wrap;
+    }
+
+    /* スマホ枠 */
+    .phone-frame {
+      width: 390px;
+      min-height: 844px;
+      background: #F5F5F0;
+      border: 4px solid black;
+      border-radius: 40px;
+      overflow: hidden;
+      box-shadow: 8px 8px 0px black;
+    }
+
+    /* ステータスバー */
+    .status-bar {
+      background: white;
+      height: 44px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 20px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    /* ヘッダー */
+    .header {
+      background: white;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 4px solid black;
+    }
+
+    .circle-btn {
+      width: 40px;
+      height: 40px;
+      border: 3px solid black;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      background: white;
+      position: relative;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+
+    .circle-btn::before {
+      content: '';
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background: black;
+      border-radius: 50%;
+      top: 3px;
+      left: 3px;
+      z-index: -1;
+    }
+
+    .header-title {
+      font-size: 22px;
+      font-weight: bold;
+      flex: 1;
+    }
+
+    /* ファイルリスト */
+    .content {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* ファイル行 */
+    .file-row {
+      background: white;
+      border: 3px solid black;
+      border-radius: 12px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      position: relative;
+      cursor: pointer;
+    }
+
+    /* 影ズレ */
+    .file-row-wrap {
+      position: relative;
+    }
+
+    .file-row-wrap::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 100%;
+      height: 100%;
+      background: black;
+      border-radius: 12px;
+      z-index: -1;
+    }
+
+    /* ファイル種別バッジ */
+    .badge {
+      width: 44px;
+      height: 44px;
+      border: 2px solid black;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: bold;
+      flex-shrink: 0;
+    }
+
+    .badge.txt  { background: #E5F1FF; }
+    .badge.pdf  { background: #FFE5E5; }
+    .badge.docx { background: #E5FFE9; }
+
+    .file-name {
+      flex: 1;
+      font-weight: bold;
+      font-size: 15px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 空状態 */
+    .empty-state {
+      text-align: center;
+      padding: 80px 20px;
+      color: #888;
+      line-height: 1.8;
+    }
+
+    /* 説明 */
+    .note {
+      max-width: 280px;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+
+    .note h2 {
+      font-size: 16px;
+      border-bottom: 3px solid black;
+      padding-bottom: 8px;
+      margin-bottom: 16px;
+    }
+
+    .note strong {
+      display: block;
+      background: black;
+      color: white;
+      padding: 2px 8px;
+      margin-top: 16px;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- パターンA：ファイルあり -->
+  <div class="phone-frame">
+    <div class="status-bar">
+      <span>9:41</span>
+      <span>100%</span>
+    </div>
+    <div class="header">
+      <div class="circle-btn">←</div>
+      <div class="header-title">SELECT FILE</div>
+    </div>
+    <div class="content">
+
+      <div class="file-row-wrap">
+        <div class="file-row">
+          <div class="badge txt">TXT</div>
+          <div class="file-name">reading_sample.txt</div>
+        </div>
+      </div>
+
+      <div class="file-row-wrap">
+        <div class="file-row">
+          <div class="badge pdf">PDF</div>
+          <div class="file-name">annual_report_2025.pdf</div>
+        </div>
+      </div>
+
+      <div class="file-row-wrap">
+        <div class="file-row">
+          <div class="badge docx">DOCX</div>
+          <div class="file-name">meeting_notes.docx</div>
+        </div>
+      </div>
+
+      <div class="file-row-wrap">
+        <div class="file-row">
+          <div class="badge txt">TXT</div>
+          <div class="file-name">novel_chapter01.txt</div>
+        </div>
+      </div>
+
+      <div class="file-row-wrap">
+        <div class="file-row">
+          <div class="badge pdf">PDF</div>
+          <div class="file-name">technical_spec_v3.pdf</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- パターンB：ファイルなし -->
+  <div class="phone-frame">
+    <div class="status-bar">
+      <span>9:41</span>
+      <span>100%</span>
+    </div>
+    <div class="header">
+      <div class="circle-btn">←</div>
+      <div class="header-title">SELECT FILE</div>
+    </div>
+    <div class="content">
+      <div class="empty-state">
+        📂<br><br>
+        No files found.<br>
+        Supported: TXT · PDF · DOCX
+      </div>
+    </div>
+  </div>
+
+  <!-- 説明 -->
+  <div class="note">
+    <h2>モックアップ確認ポイント</h2>
+
+    <strong>LEFT：ファイルあり</strong>
+    ヘッダー + ファイルリストのみ。<br>
+    タップで即選択、確認ダイアログなし。
+
+    <strong>RIGHT：ファイルなし</strong>
+    空状態メッセージのみ。
+
+    <strong>確認してほしいこと</strong>
+    <ul>
+      <li>このシンプルさでOK？</li>
+      <li>ファイル名だけ？ or サイズ・日付も欲しい？</li>
+      <li>検索フォルダはDownloadsだけ？ or 全ストレージ？</li>
+    </ul>
+  </div>
+
+</body>
+</html>

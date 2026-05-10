@@ -1,24 +1,45 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// local.properties から AdMob ID を読み込む
+// local.properties は .gitignore 対象なので Git に上がらず安全
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(localPropertiesFile.inputStream())
+}
+
+// local.properties に本番IDがなければ Google 公式テスト用IDを使う
+val admobAppId = localProperties["ADMOB_APP_ID"] as String?
+    ?: "ca-app-pub-3940256099942544~3347511713"
+val admobInterstitialId = localProperties["ADMOB_INTERSTITIAL_ID"] as String?
+    ?: "ca-app-pub-3940256099942544/1033173712"
 
 android {
     namespace = "com.example.voicereader"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.voicereader"
+        applicationId = "com.bridgetts.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        versionCode = 9
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // AndroidManifest.xml の ${ADMOB_APP_ID} を置換する
+        manifestPlaceholders["ADMOB_APP_ID"] = admobAppId
+        // コード内で BuildConfig.ADMOB_INTERSTITIAL_ID として参照できる
+        buildConfigField("String", "ADMOB_INTERSTITIAL_ID", "\"$admobInterstitialId\"")
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -33,6 +54,12 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true  // BuildConfig クラスを生成する（AdMob ID 参照に必要）
+    }
+
+    lint {
+        // 既存のLint警告をベースラインとして記録し、新規エラーのみを検出する
+        baseline = file("lint-baseline.xml")
     }
 }
 
@@ -66,4 +93,15 @@ dependencies {
     implementation("com.tom-roush:pdfbox-android:2.0.27.0") {
         exclude(group = "org.bouncycastle")
     }
+
+    // WorkManager（AdMobが内部で使用。明示的に指定してR8削除を防ぐ）
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    // AdMob（Google モバイル広告 SDK）
+    implementation("com.google.android.gms:play-services-ads:23.3.0")
+
+    // UMP（ユーザー同意管理 SDK）：GDPRなどの法的要件に対応するための同意フロー
+    // EU/EEA 圏のユーザーにのみ同意画面を表示し、それ以外は即通過する
+    // ※ 3.x系はplay-services-ads:23.3.0との相性問題が報告されているため2.2.0を使用
+    implementation("com.google.android.ump:user-messaging-platform:2.2.0")
 }
